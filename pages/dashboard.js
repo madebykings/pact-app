@@ -67,8 +67,11 @@ export default function Dashboard() {
 
   async function bootstrapDefaults(userId) {
     const { error: pErr } = await supabase
-      .from("user_profiles")
-      .upsert({ user_id: userId, display_name: "" });
+  .from("user_profiles")
+  .upsert(
+    { user_id: userId, display_name: "" },
+    { onConflict: "user_id" }
+  );
     if (pErr) throw pErr;
 
     const { error: wErr } = await supabase
@@ -108,12 +111,15 @@ export default function Dashboard() {
   }
 
   async function ensurePlan(userId, d) {
-    const { error } = await supabase.from("plans").upsert({
-      user_id: userId,
-      plan_date: isoDate(d),
-      plan_type: planTypeForDate(d),
-      status: "PLANNED",
-    });
+    const { error } = await supabase.from("plans").upsert(
+    {
+    user_id: userId,
+    plan_date: isoDate(d),
+    plan_type: planTypeForDate(d),
+    status: "PLANNED",
+    },
+    { onConflict: "user_id,plan_date" }
+  );
     if (error) throw error;
   }
 
@@ -264,8 +270,11 @@ export default function Dashboard() {
     const val = Number(w);
     if (!Number.isFinite(val) || val <= 0) return alert("Invalid number");
     const { error } = await supabase
-      .from("weigh_ins")
-      .upsert({ user_id: user.id, weigh_date: todayStr, weight_kg: val });
+  .from("weigh_ins")
+  .upsert(
+    { user_id: user.id, weigh_date: todayStr, weight_kg: val },
+    { onConflict: "user_id,weigh_date" }
+  );
     if (error) alert(error.message);
     await refreshAll(user.id);
   }
