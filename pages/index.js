@@ -18,14 +18,19 @@ export default function Home() {
   }
 
   async function sendLink(e) {
-    e.preventDefault();
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: `${window.location.origin}/dashboard` },
-    });
-    if (error) alert(error.message);
-    else setSent(true);
-  }
+  e.preventDefault();
+
+  const siteUrl =
+    process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
+
+  const { error } = await supabase.auth.signInWithOtp({
+    email,
+    options: { emailRedirectTo: `${siteUrl}/dashboard` },
+  });
+
+  if (error) alert(error.message);
+  else setSent(true);
+}
 
   return (
     <div style={{ maxWidth: 420, margin: "40px auto", fontFamily: "system-ui" }}>
