@@ -73,7 +73,10 @@ export default function Dashboard() {
 
     const { error: wErr } = await supabase
       .from("water_logs")
-      .upsert({ user_id: userId, log_date: todayStr, ml_total: 0 });
+      .upsert(
+        { user_id: userId, log_date: todayStr, ml_total: 0 },
+        { onConflict: "user_id,log_date" }
+    );
     if (wErr) throw wErr;
 
     await ensurePlan(userId, today);
