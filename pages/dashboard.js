@@ -14,6 +14,7 @@ export default function Dashboard() {
   const [supps, setSupps] = useState([]);
   const [takenMap, setTakenMap] = useState({});
   const [weighIn, setWeighIn] = useState(null);
+  const [errMsg, setErrMsg] = useState("");
 
   const today = useMemo(() => new Date(), []);
   const tomorrow = useMemo(() => addDays(today, 1), [today]);
@@ -22,37 +23,69 @@ export default function Dashboard() {
 
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.auth.getUser();
-      if (!data?.user) {
-        window.location.href = "/";
-        return;
-      }
-      setUser(data.user);
+      try {
+        const { data, error } = await supabase.auth.getUser();
+        if (error) throw error;
+        if (!data?.user) {
+          window.location.href = "/";
+          return;
+        }
+        setUser(data.user);
 
-      // Register push device (OneSignal)
-      const playerId = await initOneSignal();
-      if (playerId) {
-        await supabase.from("push_devices").upsert({ user_id: data.user.id, onesignal_player_id: playerId });
-      }
+        // IMPORTANT: don't block app startup on push SDK
+        // Fire-and-forget registration (with a timeout safety)
+        registerPushDevice(data.user.id);
 
-      await bootstrapDefaults(data.user.id);
-      await refreshAll(data.user.id);
+        await bootstrapDefaults(data.user.id);
+        await refreshAll(data.user.id);
+      } catch (e) {
+        setErrMsg(e?.message || String(e));
+      }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  async function registerPushDevice(userId) {
+    try {
+      const withTimeout = (p, ms = 7000) =>
+        Promise.race([
+          p,
+          new Promise((_, rej) => setTimeout(() => rej(new Error("Push init timeout")), ms)),
+        ]);
+
+      const playerId = await withTimeout(initOneSignal(), 7000);
+      if (playerId) {
+        await supabase.from("push_devices").upsert({
+          user_id: userId,
+          onesignal_player_id: playerId,
+        });
+      }
+    } catch {
+      // ignore push errors; app should still work
+    }
+  }
+
   async function bootstrapDefaults(userId) {
-    // profile
-    await supabase.from("user_profiles").upsert({ user_id: userId, display_name: "" });
+    const { error: pErr } = await supabase
+      .from("user_profiles")
+      .upsert({ user_id: userId, display_name: "" });
+    if (pErr) throw pErr;
 
-    // water row
-    await supabase.from("water_logs").upsert({ user_id: userId, log_date: todayStr, ml_total: 0 });
+    const { error: wErr } = await supabase
+      .from("water_logs")
+      .upsert({ user_id: userId, log_date: todayStr, ml_total: 0 });
+    if (wErr) throw wErr;
 
-    // ensure plans exist (in case worker hasn't generated yet)
     await ensurePlan(userId, today);
     await ensurePlan(userId, tomorrow);
 
-    // default supplements (if none exist)
-    const { data: existing } = await supabase.from("supplements").select("id").eq("user_id", userId).limit(1);
+    const { data: existing, error: exErr } = await supabase
+      .from("supplements")
+      .select("id")
+      .eq("user_id", userId)
+      .limit(1);
+    if (exErr) throw exErr;
+
     if (!existing || existing.length === 0) {
       const defaults = [
         { name: "Creatine", rule_type: "PRE_WORKOUT", offset_minutes: -45 },
@@ -66,44 +99,77 @@ export default function Dashboard() {
         { name: "ZMA", rule_type: "BED_WINDOW", window_start: "21:00", window_end: "23:59" },
       ].map((s) => ({ ...s, user_id: userId }));
 
-      await supabase.from("supplements").insert(defaults);
+      const { error: insErr } = await supabase.from("supplements").insert(defaults);
+      if (insErr) throw insErr;
     }
   }
 
   async function ensurePlan(userId, d) {
-    await supabase.from("plans").upsert({
+    const { error } = await supabase.from("plans").upsert({
       user_id: userId,
       plan_date: isoDate(d),
       plan_type: planTypeForDate(d),
       status: "PLANNED",
     });
+    if (error) throw error;
+  }
+
+  async function fetchPlan(userId, dateStr) {
+    const { data, error } = await supabase
+      .from("plans")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("plan_date", dateStr)
+      .maybeSingle();
+    if (error) throw error;
+    return data;
   }
 
   async function refreshAll(userId) {
-    const { data: tp } = await supabase.from("plans").select("*").eq("user_id", userId).eq("plan_date", todayStr).single();
-    const { data: tomp } = await supabase.from("plans").select("*").eq("user_id", userId).eq("plan_date", tomorrowStr).single();
+    const tp = await fetchPlan(userId, todayStr);
+    const tomp = await fetchPlan(userId, tomorrowStr);
+
     setTodayPlan(tp);
     setTomorrowPlan(tomp);
 
     const end = isoDate(addDays(today, 6));
-    const { data: wp } = await supabase
+    const { data: wp, error: wpErr } = await supabase
       .from("plans")
       .select("*")
       .eq("user_id", userId)
       .gte("plan_date", todayStr)
       .lte("plan_date", end)
       .order("plan_date");
+    if (wpErr) throw wpErr;
     setWeekPlans(wp || []);
 
-    const { data: waterRow } = await supabase.from("water_logs").select("*").eq("user_id", userId).eq("log_date", todayStr).single();
+    const { data: waterRow, error: wErr } = await supabase
+      .from("water_logs")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("log_date", todayStr)
+      .maybeSingle();
+    if (wErr) throw wErr;
     setWater(waterRow);
 
-    const { data: suppRows } = await supabase.from("supplements").select("*").eq("user_id", userId).eq("active", true).order("name");
+    const { data: suppRows, error: sErr } = await supabase
+      .from("supplements")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("active", true)
+      .order("name");
+    if (sErr) throw sErr;
     setSupps(suppRows || []);
 
     const ids = (suppRows || []).map((s) => s.id);
     if (ids.length) {
-      const { data: logs } = await supabase.from("supplement_logs").select("supplement_id").eq("log_date", todayStr).in("supplement_id", ids);
+      const { data: logs, error: lErr } = await supabase
+        .from("supplement_logs")
+        .select("supplement_id")
+        .eq("log_date", todayStr)
+        .in("supplement_id", ids);
+      if (lErr) throw lErr;
+
       const map = {};
       (logs || []).forEach((r) => (map[r.supplement_id] = true));
       setTakenMap(map);
@@ -112,7 +178,13 @@ export default function Dashboard() {
     }
 
     if (new Date().getDay() === 0) {
-      const { data: w } = await supabase.from("weigh_ins").select("*").eq("user_id", userId).eq("weigh_date", todayStr).maybeSingle();
+      const { data: w, error: wiErr } = await supabase
+        .from("weigh_ins")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("weigh_date", todayStr)
+        .maybeSingle();
+      if (wiErr) throw wiErr;
       setWeighIn(w || null);
     } else {
       setWeighIn(null);
@@ -121,21 +193,30 @@ export default function Dashboard() {
 
   async function setTomorrowTime(timeStr) {
     if (!user || !tomorrowPlan) return;
-    const { error } = await supabase.from("plans").update({ planned_time: timeStr, updated_at: new Date().toISOString() }).eq("id", tomorrowPlan.id);
+    const { error } = await supabase
+      .from("plans")
+      .update({ planned_time: timeStr, updated_at: new Date().toISOString() })
+      .eq("id", tomorrowPlan.id);
     if (error) alert(error.message);
     await refreshAll(user.id);
   }
 
   async function moveTodayTime(timeStr) {
     if (!user || !todayPlan) return;
-    const { error } = await supabase.from("plans").update({ planned_time: timeStr, updated_at: new Date().toISOString() }).eq("id", todayPlan.id);
+    const { error } = await supabase
+      .from("plans")
+      .update({ planned_time: timeStr, updated_at: new Date().toISOString() })
+      .eq("id", todayPlan.id);
     if (error) alert(error.message);
     await refreshAll(user.id);
   }
 
   async function markDone(plan) {
     if (!user || !plan) return;
-    const { error } = await supabase.from("plans").update({ status: "DONE", updated_at: new Date().toISOString() }).eq("id", plan.id);
+    const { error } = await supabase
+      .from("plans")
+      .update({ status: "DONE", updated_at: new Date().toISOString() })
+      .eq("id", plan.id);
     if (!error) await supabase.from("workout_logs").insert({ plan_id: plan.id });
     if (error) alert(error.message);
     await refreshAll(user.id);
@@ -155,7 +236,10 @@ export default function Dashboard() {
   async function addWater(ml) {
     if (!user || !water) return;
     const next = (water.ml_total || 0) + ml;
-    const { error } = await supabase.from("water_logs").update({ ml_total: next, updated_at: new Date().toISOString() }).eq("id", water.id);
+    const { error } = await supabase
+      .from("water_logs")
+      .update({ ml_total: next, updated_at: new Date().toISOString() })
+      .eq("id", water.id);
     if (error) alert(error.message);
     await refreshAll(user.id);
   }
@@ -163,7 +247,9 @@ export default function Dashboard() {
   async function tickSupplement(suppId) {
     if (!user) return;
     if (takenMap[suppId]) return;
-    const { error } = await supabase.from("supplement_logs").insert({ supplement_id: suppId, log_date: todayStr });
+    const { error } = await supabase
+      .from("supplement_logs")
+      .insert({ supplement_id: suppId, log_date: todayStr });
     if (error) alert(error.message);
     await refreshAll(user.id);
   }
@@ -174,7 +260,9 @@ export default function Dashboard() {
     if (!w) return;
     const val = Number(w);
     if (!Number.isFinite(val) || val <= 0) return alert("Invalid number");
-    const { error } = await supabase.from("weigh_ins").upsert({ user_id: user.id, weigh_date: todayStr, weight_kg: val });
+    const { error } = await supabase
+      .from("weigh_ins")
+      .upsert({ user_id: user.id, weigh_date: todayStr, weight_kg: val });
     if (error) alert(error.message);
     await refreshAll(user.id);
   }
@@ -184,7 +272,19 @@ export default function Dashboard() {
     window.location.href = "/";
   }
 
-  if (!todayPlan || !tomorrowPlan) return <div style={{ padding: 20, fontFamily: "system-ui" }}>Loading…</div>;
+  if (errMsg) {
+    return (
+      <div style={{ padding: 20, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
+        <h2>Pact</h2>
+        <p><b>Error:</b> {errMsg}</p>
+        <button onClick={logout}>Logout</button>
+      </div>
+    );
+  }
+
+  if (!todayPlan || !tomorrowPlan) {
+    return <div style={{ padding: 20, fontFamily: "system-ui" }}>Loading…</div>;
+  }
 
   const isTrainingToday = todayPlan.plan_type !== "REST";
   const isTrainingTomorrow = tomorrowPlan.plan_type !== "REST";
@@ -196,7 +296,6 @@ export default function Dashboard() {
         <button onClick={logout}>Logout</button>
       </div>
 
-      {/* TODAY */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Today</div>
         <div style={{ fontSize: 26, fontWeight: 800 }}>
@@ -230,11 +329,8 @@ export default function Dashboard() {
             Status: {todayPlan.status}{todayPlan.cancel_reason ? ` (${todayPlan.cancel_reason})` : ""}
           </div>
         )}
-
-        {todayPlan.plan_type === "REST" && <div style={{ marginTop: 10, opacity: 0.8 }}>Rest message goes at 09:00.</div>}
       </div>
 
-      {/* TOMORROW TIME */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Tomorrow time (must be set by 23:59)</div>
         <div style={{ fontSize: 22, fontWeight: 800 }}>
@@ -254,7 +350,6 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* WEEK */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Next 7 days</div>
         <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
@@ -269,7 +364,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* WATER */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Water (target 3L)</div>
         <div style={{ fontSize: 22, fontWeight: 800 }}>{water?.ml_total || 0} ml</div>
@@ -279,19 +373,13 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* SUPPS */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Supplements (one tap)</div>
         <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
           {supps.map((s) => (
             <button
               key={s.id}
-              style={{
-                padding: 12,
-                textAlign: "left",
-                fontSize: 16,
-                opacity: takenMap[s.id] ? 0.4 : 1,
-              }}
+              style={{ padding: 12, textAlign: "left", fontSize: 16, opacity: takenMap[s.id] ? 0.4 : 1 }}
               onClick={() => tickSupplement(s.id)}
             >
               {takenMap[s.id] ? "✅" : "⬜"} {s.name}
@@ -300,11 +388,12 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* SUNDAY WEIGH-IN */}
       {new Date().getDay() === 0 && (
         <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
           <div style={{ fontSize: 14, opacity: 0.8 }}>Sunday weigh-in (hard cutoff 23:59)</div>
-          <div style={{ fontSize: 22, fontWeight: 800 }}>{weighIn ? `${weighIn.weight_kg} kg logged` : "Not logged"}</div>
+          <div style={{ fontSize: 22, fontWeight: 800 }}>
+            {weighIn ? `${weighIn.weight_kg} kg logged` : "Not logged"}
+          </div>
           <button style={{ width: "100%", padding: 12, marginTop: 10, fontSize: 16 }} onClick={submitWeighIn} disabled={!!weighIn}>
             LOG WEIGHT
           </button>
