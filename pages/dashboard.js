@@ -1,9 +1,8 @@
+// pages/dashboard.js
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { addDays, isoDate, planTypeForDate } from "../lib/weekTemplate";
 import { initOneSignal } from "../lib/onesignal";
-
-const TIME_PRESETS = ["08:00", "12:00", "18:00"];
 
 export default function Dashboard() {
   const [user, setUser] = useState(null);
@@ -32,8 +31,7 @@ export default function Dashboard() {
         }
         setUser(data.user);
 
-        // IMPORTANT: don't block app startup on push SDK
-        // Fire-and-forget registration (with a timeout safety)
+        // Don't block UI if push SDK is slow
         registerPushDevice(data.user.id);
 
         await bootstrapDefaults(data.user.id);
@@ -55,36 +53,39 @@ export default function Dashboard() {
 
       const playerId = await withTimeout(initOneSignal(), 7000);
       if (playerId) {
-        await supabase.from("push_devices").upsert({
-          user_id: userId,
-          onesignal_player_id: playerId,
-        });
+        await supabase.from("push_devices").upsert(
+          { user_id: userId, onesignal_player_id: playerId },
+          { onConflict: "user_id" }
+        );
       }
     } catch {
-      // ignore push errors; app should still work
+      // ignore
     }
   }
 
   async function bootstrapDefaults(userId) {
-    const { error: pErr } = await supabase
-  .from("user_profiles")
-  .upsert(
-    { user_id: userId, display_name: "" },
-    { onConflict: "user_id" }
-  );
-    if (pErr) throw pErr;
+    // profile
+    {
+      const { error } = await supabase
+        .from("user_profiles")
+        .upsert({ user_id: userId, display_name: "" }, { onConflict: "user_id" });
+      if (error) throw error;
+    }
 
-    const { error: wErr } = await supabase
-      .from("water_logs")
-      .upsert(
+    // water (today)
+    {
+      const { error } = await supabase.from("water_logs").upsert(
         { user_id: userId, log_date: todayStr, ml_total: 0 },
         { onConflict: "user_id,log_date" }
-    );
-    if (wErr) throw wErr;
+      );
+      if (error) throw error;
+    }
 
+    // plans (today + tomorrow)
     await ensurePlan(userId, today);
     await ensurePlan(userId, tomorrow);
 
+    // default supplements if none exist
     const { data: existing, error: exErr } = await supabase
       .from("supplements")
       .select("id")
@@ -103,23 +104,23 @@ export default function Dashboard() {
         { name: "B12 Coffee", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
         { name: "Ashwagandha", rule_type: "EVENING_WINDOW", window_start: "17:00", window_end: "21:00" },
         { name: "ZMA", rule_type: "BED_WINDOW", window_start: "21:00", window_end: "23:59" },
-      ].map((s) => ({ ...s, user_id: userId }));
+      ].map((s) => ({ ...s, user_id: userId, active: true }));
 
-      const { error: insErr } = await supabase.from("supplements").insert(defaults);
-      if (insErr) throw insErr;
+      const { error } = await supabase.from("supplements").insert(defaults);
+      if (error) throw error;
     }
   }
 
   async function ensurePlan(userId, d) {
     const { error } = await supabase.from("plans").upsert(
-    {
-    user_id: userId,
-    plan_date: isoDate(d),
-    plan_type: planTypeForDate(d),
-    status: "PLANNED",
-    },
-    { onConflict: "user_id,plan_date" }
-  );
+      {
+        user_id: userId,
+        plan_date: isoDate(d),
+        plan_type: planTypeForDate(d),
+        status: "PLANNED",
+      },
+      { onConflict: "user_id,plan_date" }
+    );
     if (error) throw error;
   }
 
@@ -200,6 +201,20 @@ export default function Dashboard() {
     }
   }
 
+  function suppWhenLabel(s, planTime) {
+    const pt = planTime || "??:??";
+
+    if (s.rule_type === "PRE_WORKOUT") {
+      const off = Number(s.offset_minutes || 0);
+      const sign = off < 0 ? "" : "+";
+      return `${sign}${off}m vs workout (${pt})`;
+    }
+    if (s.rule_type === "MORNING_WINDOW") return `${s.window_start || "06:00"}–${s.window_end || "10:00"}`;
+    if (s.rule_type === "EVENING_WINDOW") return `${s.window_start || "17:00"}–${s.window_end || "21:00"}`;
+    if (s.rule_type === "BED_WINDOW") return `before bed (${s.window_start || "21:00"}–${s.window_end || "23:59"})`;
+    return "anytime";
+  }
+
   async function setTomorrowTime(timeStr) {
     if (!user || !tomorrowPlan) return;
     const { error } = await supabase
@@ -243,23 +258,36 @@ export default function Dashboard() {
   }
 
   async function addWater(ml) {
-    if (!user || !water) return;
-    const next = (water.ml_total || 0) + ml;
-    const { error } = await supabase
-      .from("water_logs")
-      .update({ ml_total: next, updated_at: new Date().toISOString() })
-      .eq("id", water.id);
+    if (!user) return;
+    const current = water?.ml_total || 0;
+    const next = current + ml;
+
+    // UPSERT by (user_id,log_date) so it can't "not save"
+    const { error } = await supabase.from("water_logs").upsert(
+      { user_id: user.id, log_date: todayStr, ml_total: next, updated_at: new Date().toISOString() },
+      { onConflict: "user_id,log_date" }
+    );
     if (error) alert(error.message);
     await refreshAll(user.id);
   }
 
   async function tickSupplement(suppId) {
     if (!user) return;
-    if (takenMap[suppId]) return;
-    const { error } = await supabase
-      .from("supplement_logs")
-      .insert({ supplement_id: suppId, log_date: todayStr });
-    if (error) alert(error.message);
+
+    if (takenMap[suppId]) {
+      const { error } = await supabase
+        .from("supplement_logs")
+        .delete()
+        .eq("supplement_id", suppId)
+        .eq("log_date", todayStr);
+      if (error) alert(error.message);
+    } else {
+      const { error } = await supabase
+        .from("supplement_logs")
+        .insert({ supplement_id: suppId, log_date: todayStr });
+      if (error) alert(error.message);
+    }
+
     await refreshAll(user.id);
   }
 
@@ -269,12 +297,11 @@ export default function Dashboard() {
     if (!w) return;
     const val = Number(w);
     if (!Number.isFinite(val) || val <= 0) return alert("Invalid number");
+
     const { error } = await supabase
-  .from("weigh_ins")
-  .upsert(
-    { user_id: user.id, weigh_date: todayStr, weight_kg: val },
-    { onConflict: "user_id,weigh_date" }
-  );
+      .from("weigh_ins")
+      .upsert({ user_id: user.id, weigh_date: todayStr, weight_kg: val }, { onConflict: "user_id,weigh_date" });
+
     if (error) alert(error.message);
     await refreshAll(user.id);
   }
@@ -305,9 +332,15 @@ export default function Dashboard() {
     <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h2 style={{ margin: 0 }}>Pact</h2>
-        <button onClick={logout}>Logout</button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <a href="/settings" style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}>
+            Settings
+          </a>
+          <button onClick={logout}>Logout</button>
+        </div>
       </div>
 
+      {/* TODAY */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Today</div>
         <div style={{ fontSize: 26, fontWeight: 800 }}>
@@ -326,13 +359,12 @@ export default function Dashboard() {
             </div>
 
             <div style={{ marginTop: 12, fontSize: 14, opacity: 0.8 }}>Move time (same day)</div>
-            <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-              {TIME_PRESETS.map((t) => (
-                <button key={t} style={{ flex: 1, padding: 12, fontSize: 16 }} onClick={() => moveTodayTime(t)}>
-                  {t}
-                </button>
-              ))}
-            </div>
+            <input
+              type="time"
+              value={todayPlan.planned_time || ""}
+              onChange={(e) => moveTodayTime(e.target.value)}
+              style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 8 }}
+            />
           </>
         )}
 
@@ -343,25 +375,26 @@ export default function Dashboard() {
         )}
       </div>
 
+      {/* TOMORROW */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
-        <div style={{ fontSize: 14, opacity: 0.8 }}>Tomorrow time (must be set by 23:59)</div>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Tomorrow (set by 23:59)</div>
         <div style={{ fontSize: 22, fontWeight: 800 }}>
           {tomorrowPlan.plan_type} {tomorrowPlan.planned_time ? `— ${tomorrowPlan.planned_time}` : "— not set"}
         </div>
 
         {isTrainingTomorrow ? (
-          <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-            {TIME_PRESETS.map((t) => (
-              <button key={t} style={{ flex: 1, padding: 12, fontSize: 16 }} onClick={() => setTomorrowTime(t)}>
-                {t}
-              </button>
-            ))}
-          </div>
+          <input
+            type="time"
+            value={tomorrowPlan.planned_time || ""}
+            onChange={(e) => setTomorrowTime(e.target.value)}
+            style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 8 }}
+          />
         ) : (
           <div style={{ marginTop: 10, opacity: 0.8 }}>Rest day. No time required.</div>
         )}
       </div>
 
+      {/* WEEK */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Next 7 days</div>
         <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
@@ -376,6 +409,7 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* WATER */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Water (target 3L)</div>
         <div style={{ fontSize: 22, fontWeight: 800 }}>{water?.ml_total || 0} ml</div>
@@ -385,21 +419,30 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* SUPPS */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
-        <div style={{ fontSize: 14, opacity: 0.8 }}>Supplements (one tap)</div>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Supplements (tap to toggle)</div>
         <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
           {supps.map((s) => (
             <button
               key={s.id}
-              style={{ padding: 12, textAlign: "left", fontSize: 16, opacity: takenMap[s.id] ? 0.4 : 1 }}
+              style={{ padding: 12, textAlign: "left", fontSize: 16, opacity: takenMap[s.id] ? 0.45 : 1 }}
               onClick={() => tickSupplement(s.id)}
             >
-              {takenMap[s.id] ? "✅" : "⬜"} {s.name}
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <div style={{ fontWeight: 800 }}>
+                  {takenMap[s.id] ? "✅" : "⬜"} {s.name}
+                </div>
+                <div style={{ opacity: 0.7, fontSize: 13 }}>
+                  {suppWhenLabel(s, todayPlan?.planned_time)}
+                </div>
+              </div>
             </button>
           ))}
         </div>
       </div>
 
+      {/* SUNDAY WEIGH-IN */}
       {new Date().getDay() === 0 && (
         <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
           <div style={{ fontSize: 14, opacity: 0.8 }}>Sunday weigh-in (hard cutoff 23:59)</div>
@@ -411,6 +454,16 @@ export default function Dashboard() {
           </button>
         </div>
       )}
+
+      {/* NEXT FEATURES LINKS */}
+      <div style={{ marginTop: 14, display: "flex", gap: 10 }}>
+        <a href="/sleep" style={{ flex: 1, padding: 12, border: "1px solid #ddd", borderRadius: 12, textAlign: "center", textDecoration: "none" }}>
+          Sleep
+        </a>
+        <a href="/team" style={{ flex: 1, padding: 12, border: "1px solid #ddd", borderRadius: 12, textAlign: "center", textDecoration: "none" }}>
+          Team / Solo
+        </a>
+      </div>
     </div>
   );
 }
