@@ -9,6 +9,7 @@ const ALL_ACTIVITIES = [
   { value: "WALK", label: "Walk" },
   { value: "RUN", label: "Run" },
   { value: "SPIN", label: "Spin" },
+  { value: "HIIT", label: "HIIT" },
   { value: "SWIM", label: "Swim" },
   { value: "HILLWALK", label: "Hillwalk" },
   { value: "WEIGHTS", label: "Weights" },
