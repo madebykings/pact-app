@@ -414,8 +414,7 @@ export default function Dashboard() {
 
     await supabase.from("workout_logs").delete().eq("plan_id", plan.id);
     // Undo shouldn't nuke points. Light slap only.
-    await logEvent({ event_type: "undo_done", points: -2, plan_id: plan.id });
-
+    
     await refreshAll(user.id);
   }
 
@@ -428,8 +427,7 @@ export default function Dashboard() {
       .eq("id", plan.id);
     if (error) return alert(error.message);
 
-    await logEvent({ event_type: "undo_cancel", points: 5, plan_id: plan.id });
-
+    
     await refreshAll(user.id);
   }
 
