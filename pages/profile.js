@@ -20,41 +20,14 @@ function isoDay(d) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function TopNav({ active, onLogout }) {
-  const linkStyle = (isActive) => ({
-    padding: "6px 10px",
-    border: "1px solid #ddd",
-    borderRadius: 10,
-    textDecoration: "none",
-    opacity: isActive ? 1 : 0.8,
-    fontWeight: isActive ? 800 : 600,
-  });
-
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-      <h2 style={{ margin: 0 }}>Pact</h2>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-        <a href="/dashboard" style={linkStyle(active === "dashboard")}>Dashboard</a>
-        <a href="/team" style={linkStyle(active === "pact")}>Pact</a>
-        <a href="/settings" style={linkStyle(active === "settings")}>Settings</a>
-        <button onClick={onLogout}>Logout</button>
-      </div>
-    </div>
-  );
-}
-
 export default function Profile() {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
-  const [nameInput, setNameInput] = useState("");
-  const [saveStatus, setSaveStatus] = useState("");
   const [weekPoints, setWeekPoints] = useState(0);
   const [weekDoneCount, setWeekDoneCount] = useState(0);
-
-  const [latestWeight, setLatestWeight] = useState(null);
-  const [weightDelta, setWeightDelta] = useState(null);
-
-  const [errMsg, setErrMsg] = useState("");
+  const [err, setErr] = useState("");
+  const [draftName, setDraftName] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const now = useMemo(() => new Date(), []);
   const weekStart = useMemo(() => startOfWeek(now), [now]);
@@ -75,37 +48,16 @@ export default function Profile() {
         }
         setUser(data.user);
 
-        // Ensure profile row exists
-        await supabase.from("user_profiles").upsert(
-          { user_id: data.user.id, display_name: "" },
-          { onConflict: "user_id" }
-        );
+        await supabase
+          .from("user_profiles")
+          .upsert({ user_id: data.user.id, display_name: "" }, { onConflict: "user_id" });
 
         await refresh(data.user.id);
       } catch (e) {
-        setErrMsg(e?.message || String(e));
+        setErr(e?.message || String(e));
       }
     })();
   }, []);
-
-  // Realtime refresh for points (optional, harmless if Realtime disabled)
-  useEffect(() => {
-    if (!user) return;
-    const ch = supabase
-      .channel("activity_events_user_" + user.id)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "activity_events", filter: "user_id=eq." + user.id },
-        () => refresh(user.id)
-      )
-      .subscribe();
-
-    return () => {
-      try { supabase.removeChannel(ch); } catch {}
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
-
 
   async function refresh(userId) {
     const { data: p, error: pErr } = await supabase
@@ -115,24 +67,22 @@ export default function Profile() {
       .maybeSingle();
     if (pErr) throw pErr;
     setProfile(p || null);
-    setNameInput(p?.display_name || "");
+    setDraftName(p?.display_name || "");
 
-    // Weekly points + weekly done count
-    // NOTE: points are allocated immediately when actions occur (DONE / set time / water target / sleep target etc.)
-    // We sum points from activity_events for the current week.
-    let points = 0;
-    {
-      const { data: evRows, error: evErr } = await supabase
-        .from("activity_events")
-        .select("points,created_at")
-        .eq("user_id", userId)
-        .gte("created_at", weekStart.toISOString())
-        .lt("created_at", weekEnd.toISOString());
-      if (!evErr) points = (evRows || []).reduce((sum, r) => sum + (Number(r.points) || 0), 0);
+    // points this week
+    const { data: pts, error: ptsErr } = await supabase
+      .from("activity_events")
+      .select("points,event_date")
+      .eq("user_id", userId)
+      .gte("event_date", isoDay(weekStart))
+      .lt("event_date", isoDay(weekEnd));
+    if (!ptsErr) {
+      const total = (pts || []).reduce((sum, r) => sum + Number(r.points || 0), 0);
+      setWeekPoints(total);
     }
-    setWeekPoints(points);
 
-const { data: doneRows, error: dErr } = await supabase
+    // workouts done this week (plans)
+    const { data: doneRows, error: dErr } = await supabase
       .from("plans")
       .select("id")
       .eq("user_id", userId)
@@ -140,41 +90,39 @@ const { data: doneRows, error: dErr } = await supabase
       .gte("plan_date", isoDay(weekStart))
       .lt("plan_date", isoDay(weekEnd));
     if (!dErr) setWeekDoneCount((doneRows || []).length);
-
-    // Weight: latest + previous (for delta)
-    const { data: ws, error: wErr } = await supabase
-      .from("weigh_ins")
-      .select("weigh_date,weight_kg")
-      .eq("user_id", userId)
-      .order("weigh_date", { ascending: false })
-      .limit(2);
-    if (!wErr && ws && ws.length) {
-      setLatestWeight(ws[0]);
-      if (ws.length >= 2) {
-        const delta = Number(ws[0].weight_kg) - Number(ws[1].weight_kg);
-        setWeightDelta(Number.isFinite(delta) ? delta : null);
-      } else {
-        setWeightDelta(null);
-      }
-    } else {
-      setLatestWeight(null);
-      setWeightDelta(null);
-    }
   }
 
-  async function saveDisplayName() {
+  async function saveDisplayName(name) {
     if (!user) return;
-    const name = (nameInput || "").trim();
-    setSaveStatus("Saving…");
-    const { error } = await supabase.from("user_profiles").upsert(
-      { user_id: user.id, display_name: name },
-      { onConflict: "user_id" }
-    );
-    if (error) {
-      setSaveStatus("Could not save: " + error.message);
-      return alert(error.message);
+    const next = (name || "").trim();
+    setSaving(true);
+
+    // Try update first (avoids duplicate rows if unique constraint isn't present yet)
+    const { data: upd, error: uErr } = await supabase
+      .from("user_profiles")
+      .update({ display_name: next })
+      .eq("user_id", user.id)
+      .select("user_id")
+      .maybeSingle();
+
+    if (uErr) {
+      setSaving(false);
+      alert(uErr.message);
+      return;
     }
-    setSaveStatus("Saved ✅");
+
+    if (!upd) {
+      const { error: iErr } = await supabase
+        .from("user_profiles")
+        .insert({ user_id: user.id, display_name: next });
+      if (iErr) {
+        setSaving(false);
+        alert(iErr.message);
+        return;
+      }
+    }
+
+    setSaving(false);
     await refresh(user.id);
   }
 
@@ -183,82 +131,60 @@ const { data: doneRows, error: dErr } = await supabase
     window.location.href = "/";
   }
 
-  if (errMsg) {
+  if (err) {
     return (
-      <div style={{ padding: 20, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
-        <h2>Pact</h2>
-        <p><b>Error:</b> {errMsg}</p>
-        <button onClick={logout}>Logout</button>
+      <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
+        <h2>Profile</h2>
+        <div><b>Error:</b> {err}</div>
+        <button style={{ marginTop: 12 }} onClick={logout}>Logout</button>
       </div>
     );
   }
 
-  if (!user || profile === null) {
-    return <div style={{ padding: 20, fontFamily: "system-ui" }}>Loading…</div>;
-  }
+  if (!user || !profile) return <div style={{ padding: 18, fontFamily: "system-ui" }}>Loading…</div>;
 
   return (
     <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
-      <TopNav active="profile" onLogout={logout} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h2 style={{ margin: 0 }}>Profile</h2>
+        <a href="/dashboard" style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}>
+          Back
+        </a>
+      </div>
 
-      {/* PROFILE */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
-        <div style={{ fontSize: 14, opacity: 0.8 }}>Profile</div>
-
-        <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 13, opacity: 0.7 }}>Email</div>
-          <div style={{ fontWeight: 800 }}>{user.email}</div>
-        </div>
-
-        <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 13, opacity: 0.7 }}>Display name</div>
-          <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-            <input
-              value={nameInput}
-              onChange={(e) => setNameInput(e.target.value)}
-              placeholder="Your name"
-              style={{ flex: 1, padding: 12, fontSize: 16 }}
-            />
-            <button onClick={saveDisplayName} style={{ padding: "12px 14px", fontWeight: 800 }}>
-              Save
-            </button>
-          </div>
-            {saveStatus && (
-              <div style={{ marginTop: 8, fontSize: 13, opacity: 0.75 }}>{saveStatus}</div>
-            )}
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Display name</div>
+        <input
+          value={draftName}
+          onChange={(e) => setDraftName(e.target.value)}
+          placeholder="Your name"
+          style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 10 }}
+        />
+        <button
+          style={{ width: "100%", padding: 12, marginTop: 10, fontWeight: 900, opacity: saving ? 0.7 : 1 }}
+          onClick={() => saveDisplayName(draftName)}
+          disabled={saving}
+        >
+          Save name
+        </button>
+        <div style={{ marginTop: 10, fontSize: 13, opacity: 0.75 }}>
+          Email: <b>{user.email}</b>
         </div>
       </div>
 
-      {/* THIS WEEK */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>This week</div>
-        <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
-          <div><b>Points:</b> {weekPoints}</div>
-          <div><b>Workouts done:</b> {weekDoneCount}</div>
+        <div style={{ marginTop: 8, fontSize: 22, fontWeight: 900 }}>{weekPoints} points</div>
+        <div style={{ marginTop: 6, fontSize: 13, opacity: 0.75 }}>
+          Workouts completed: {weekDoneCount}
+        </div>
+        <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
+          Week: {isoDay(weekStart)} → {isoDay(weekEnd)}
         </div>
       </div>
 
-      {/* WEIGHT */}
-      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
-        <div style={{ fontSize: 14, opacity: 0.8 }}>Weight</div>
-
-        {latestWeight ? (
-          <div style={{ marginTop: 8 }}>
-            <div style={{ fontSize: 22, fontWeight: 800 }}>{latestWeight.weight_kg} kg</div>
-            <div style={{ marginTop: 4, fontSize: 13, opacity: 0.75 }}>
-              Logged: {latestWeight.weigh_date}
-              {weightDelta != null && (
-                <> — change vs previous: {weightDelta > 0 ? "+" : ""}{weightDelta.toFixed(1)} kg</>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div style={{ marginTop: 8, opacity: 0.75 }}>No weigh-in logged yet.</div>
-        )}
-
-        <div style={{ marginTop: 10, fontSize: 13, opacity: 0.75 }}>
-          Weigh-in is only available on Sundays from the Dashboard.
-        </div>
+      <div style={{ marginTop: 14 }}>
+        <button style={{ width: "100%", padding: 12 }} onClick={logout}>Logout</button>
       </div>
     </div>
   );
