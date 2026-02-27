@@ -1,7 +1,9 @@
 // pages/dashboard.js
 import { useEffect, useMemo, useState } from "react";
+import TopNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
 import { addDays, isoDate, planTypeForDate } from "../lib/weekTemplate";
+import { logActivityEvent } from "../lib/activityEvents";
 
 const ALL_ACTIVITIES = [
   { value: "REST", label: "Rest" },
@@ -14,8 +16,18 @@ const ALL_ACTIVITIES = [
   { value: "HIIT", label: "HIIT" },
   { value: "YOGA", label: "Yoga" },
   { value: "PILATES", label: "Pilates" },
+  { value: "MOBILITY", label: "Mobility" },
   { value: "OTHER", label: "Other" },
 ];
+
+function mondayStart(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  const day = x.getDay(); // 0=Sun
+  const diff = day === 0 ? -6 : 1 - day;
+  x.setDate(x.getDate() + diff);
+  return x;
+}
 
 function calcSleepHours(bedTime, wakeTime) {
   if (!bedTime || !wakeTime) return null;
@@ -53,6 +65,11 @@ export default function Dashboard() {
   const tomorrow = useMemo(() => addDays(today, 1), [today]);
   const todayStr = isoDate(today);
   const tomorrowStr = isoDate(tomorrow);
+
+  const weekStart = useMemo(() => mondayStart(today), [today]);
+  const weekEnd = useMemo(() => addDays(weekStart, 6), [weekStart]);
+  const weekStartStr = isoDate(weekStart);
+  const weekEndStr = isoDate(weekEnd);
 
   useEffect(() => {
     (async () => {
@@ -198,7 +215,7 @@ export default function Dashboard() {
           { name: "Magnesium", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
           { name: "ZMA", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
           { name: "B12 Coffee", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
-        ].map((s) => ({ ...s, user_id: userId, points: 0 }));
+        ].map((s) => ({ ...s, user_id: userId, points: 0, active: true }));
 
         const { error: insErr } = await supabase.from("supplements").insert(defaults);
         if (insErr) throw insErr;
@@ -257,15 +274,14 @@ export default function Dashboard() {
     setTodayPlan(await fetchPlan(userId, todayStr));
     setTomorrowPlan(await fetchPlan(userId, tomorrowStr));
 
-    // week plans (simple upcoming window)
+    // week plans (current week)
     {
-      const end = isoDate(addDays(today, 7));
       const { data: wp, error: wpErr } = await supabase
         .from("plans")
         .select("*")
         .eq("user_id", userId)
-        .gte("plan_date", todayStr)
-        .lte("plan_date", end)
+        .gte("plan_date", weekStartStr)
+        .lte("plan_date", weekEndStr)
         .order("plan_date");
       if (wpErr) throw wpErr;
       setWeekPlans(wp || []);
@@ -290,6 +306,7 @@ export default function Dashboard() {
         .from("supplements")
         .select("*")
         .eq("user_id", userId)
+        .eq("active", true)
         .order("name");
       if (sErr) throw sErr;
       mySupps = s || [];
@@ -343,6 +360,16 @@ export default function Dashboard() {
     try {
       const { error } = await supabase.from("plans").update({ status: "DONE" }).eq("id", plan.id);
       if (error) throw error;
+
+      await logActivityEvent({
+        userId: user.id,
+        teamId: settings?.team_id || null,
+        eventType: "workout_done",
+        points: 10,
+        eventDate: plan.plan_date,
+        meta: { plan_id: plan.id, plan_type: plan.plan_type },
+      });
+
       await refreshAll(user.id);
     } catch (e) {
       console.warn(e);
@@ -358,6 +385,16 @@ export default function Dashboard() {
         .update({ status: "CANCELLED", cancel_reason: reason })
         .eq("id", plan.id);
       if (error) throw error;
+
+      await logActivityEvent({
+        userId: user.id,
+        teamId: settings?.team_id || null,
+        eventType: "workout_cancel",
+        points: -5,
+        eventDate: plan.plan_date,
+        meta: { plan_id: plan.id, plan_type: plan.plan_type, reason },
+      });
+
       await refreshAll(user.id);
     } catch (e) {
       console.warn(e);
@@ -369,6 +406,16 @@ export default function Dashboard() {
     try {
       const { error } = await supabase.from("plans").update({ status: "PLANNED" }).eq("id", plan.id);
       if (error) throw error;
+
+      await logActivityEvent({
+        userId: user.id,
+        teamId: settings?.team_id || null,
+        eventType: "undo_workout_done",
+        points: -10,
+        eventDate: plan.plan_date,
+        meta: { plan_id: plan.id },
+      });
+
       await refreshAll(user.id);
     } catch (e) {
       console.warn(e);
@@ -383,6 +430,16 @@ export default function Dashboard() {
         .update({ status: "PLANNED", cancel_reason: null })
         .eq("id", plan.id);
       if (error) throw error;
+
+      await logActivityEvent({
+        userId: user.id,
+        teamId: settings?.team_id || null,
+        eventType: "undo_workout_cancel",
+        points: 5,
+        eventDate: plan.plan_date,
+        meta: { plan_id: plan.id },
+      });
+
       await refreshAll(user.id);
     } catch (e) {
       console.warn(e);
@@ -405,6 +462,16 @@ export default function Dashboard() {
     try {
       const { error } = await supabase.from("plans").update({ planned_time: t || null }).eq("id", tomorrowPlan.id);
       if (error) throw error;
+
+      await logActivityEvent({
+        userId: user.id,
+        teamId: settings?.team_id || null,
+        eventType: "set_tomorrow_time",
+        points: t ? 3 : -3,
+        eventDate: tomorrowPlan.plan_date,
+        meta: { plan_id: tomorrowPlan.id, planned_time: t || null },
+      });
+
       await refreshAll(user.id);
     } catch (e) {
       console.warn(e);
@@ -434,6 +501,18 @@ export default function Dashboard() {
       }
       if (err) throw err;
 
+      // Award when hitting target (best-effort; duplicates are ok/ignored if constrained)
+      if (next >= waterTargetMl) {
+        await logActivityEvent({
+          userId: user.id,
+          teamId: settings?.team_id || null,
+          eventType: "water_hit_target",
+          points: 2,
+          eventDate: todayStr,
+          meta: { ml: next, target_ml: waterTargetMl },
+        });
+      }
+
       await refreshAll(user.id);
     } catch (e) {
       console.warn(e);
@@ -446,6 +525,7 @@ export default function Dashboard() {
     if (rt === "ANYTIME") return "Anytime";
     if (rt === "MORNING_WINDOW") return `${s.window_start || "06:00"}–${s.window_end || "10:00"}`;
     if (rt === "EVENING_WINDOW") return `${s.window_start || "18:00"}–${s.window_end || "23:59"}`;
+    if (rt === "BED_WINDOW") return `${s.window_start || "21:00"}–${s.window_end || "23:59"}`;
     if (rt === "PRE_WORKOUT") {
       if (!plannedTime) return "Before workout";
       const off = Number(s.offset_minutes || 0);
@@ -489,10 +569,37 @@ export default function Dashboard() {
         .eq("user_id", user.id)
         .eq("log_date", todayStr);
       if (error) throw error;
+
+      const nextSleep = { ...(sleep || {}), [field]: value };
+      const hrs = calcSleepHours(nextSleep.bed_time, nextSleep.wake_time);
+      if (hrs != null && hrs >= (settings?.sleep_target_hours ?? 8)) {
+        await logActivityEvent({
+          userId: user.id,
+          teamId: settings?.team_id || null,
+          eventType: "sleep_hit_target",
+          points: 2,
+          eventDate: todayStr,
+          meta: { hours: hrs, target_hours: settings?.sleep_target_hours ?? 8 },
+        });
+      }
       await refreshAll(user.id);
     } catch (e) {
       console.warn(e);
       setErrMsg(e?.message || "Failed to update sleep.");
+    }
+  }
+
+  async function addWeighIn(kgVal) {
+    try {
+      const kg = Number(kgVal);
+      if (!Number.isFinite(kg) || kg <= 0) return alert("Enter a valid weight in kg");
+
+      const { error } = await supabase.from("weigh_ins").insert({ user_id: user.id, kg });
+      if (error) throw error;
+      await refreshAll(user.id);
+    } catch (e) {
+      console.warn(e);
+      setErrMsg(e?.message || "Failed to add weigh-in.");
     }
   }
 
@@ -518,30 +625,7 @@ export default function Dashboard() {
 
   return (
     <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-        <h2 style={{ margin: 0 }}>Pact</h2>
-        <div style={{ display: "flex", gap: 8 }}>
-          <a
-            href="/team"
-            style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}
-          >
-            Pact
-          </a>
-          <a
-            href="/profile"
-            style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}
-          >
-            Profile
-          </a>
-          <a
-            href="/settings"
-            style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}
-          >
-            Settings
-          </a>
-          <button onClick={logout}>Logout</button>
-        </div>
-      </div>
+      <TopNav active="dashboard" onLogout={logout} />
 
       {/* TODAY */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
@@ -649,7 +733,10 @@ export default function Dashboard() {
 
         <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
           {weekPlans
-            .filter((p) => (weekTab === "completed" ? p.status === "DONE" : p.status !== "DONE"))
+            .filter((p) => {
+              if (weekTab === "completed") return p.status === "DONE";
+              return p.status !== "DONE" && p.plan_date >= todayStr;
+            })
             .map((p) => (
               <div key={p.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
                 <div style={{ fontWeight: 800 }}>
@@ -658,6 +745,8 @@ export default function Dashboard() {
                 <div>Status: {p.status}</div>
               </div>
             ))}
+
+          {weekPlans.length === 0 && <div style={{ opacity: 0.7 }}>No plans found for this week.</div>}
         </div>
       </div>
 
@@ -751,9 +840,33 @@ export default function Dashboard() {
               </span>
             </div>
           ) : (
-            <div style={{ opacity: 0.7 }}>No weigh-in yet.</div>
+            <div style={{ opacity: 0.7 }}>No weigh-in yet — add your starting point.</div>
           )}
         </div>
+
+        {!weighIn && (
+          <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+            <input
+              id="pact_weighin_input"
+              type="number"
+              step="0.1"
+              placeholder="Weight (kg)"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") addWeighIn(e.currentTarget.value);
+              }}
+              style={{ flex: "1 1 200px", padding: 12, fontSize: 16 }}
+            />
+            <button
+              style={{ padding: "12px 14px", fontWeight: 800 }}
+              onClick={() => {
+                const el = document.getElementById("pact_weighin_input");
+                if (el) addWeighIn(el.value);
+              }}
+            >
+              Save
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
