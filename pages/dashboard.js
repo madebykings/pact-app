@@ -208,8 +208,10 @@ export default function Dashboard() {
     setTodayPlan(tp);
     setTomorrowPlan(tomp);
 
-    // plans (7 days)
-    const end = isoDate(addDays(today, 6));
+    // plans (current week only: today -> Sunday)
+    const dow = new Date().getDay(); // 0=Sun
+    const daysUntilSunday = (7 - dow) % 7; // Sun => 0
+    const end = isoDate(addDays(today, daysUntilSunday));
     {
       const { data: wp, error: wpErr } = await supabase
         .from("plans")
@@ -755,22 +757,20 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* SUNDAY WEIGH-IN */}
-      {new Date().getDay() === 0 && (
-        <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
-          <div style={{ fontSize: 14, opacity: 0.8 }}>Sunday weigh-in (hard cutoff 23:59)</div>
-          <div style={{ fontSize: 22, fontWeight: 800, marginTop: 6 }}>
-            {weighIn ? `${weighIn.weight_kg} kg logged` : "Not logged"}
-          </div>
-          <button
-            style={{ width: "100%", padding: 12, marginTop: 10, fontSize: 16 }}
-            onClick={submitWeighIn}
-            disabled={!!weighIn}
-          >
-            LOG WEIGHT
-          </button>
+      {/* WEIGH-IN */}
+      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12, opacity: new Date().getDay() === 0 ? 1 : 0.55 }}>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Sunday weigh-in (hard cutoff 23:59)</div>
+        <div style={{ fontSize: 22, fontWeight: 800, marginTop: 6 }}>
+          {weighIn ? `${weighIn.weight_kg} kg logged` : "Not logged"}
         </div>
-      )}
+        <button
+          style={{ width: "100%", padding: 12, marginTop: 10, fontSize: 16 }}
+          onClick={submitWeighIn}
+          disabled={new Date().getDay() !== 0 || !!weighIn}
+        >
+          {new Date().getDay() === 0 ? "LOG WEIGHT" : "LOG WEIGHT (Sunday only)"}
+        </button>
+      </div>
     </div>
   );
 }
