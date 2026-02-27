@@ -9,54 +9,122 @@ const ALL_ACTIVITIES = [
   { value: "WALK", label: "Walk" },
   { value: "RUN", label: "Run" },
   { value: "SPIN", label: "Spin" },
-  { value: "STRENGTH", label: "Strength" },
-  { value: "MOBILITY", label: "Mobility" },
+  { value: "SWIM", label: "Swim" },
+  { value: "HILLWALK", label: "Hill walk" },
+  { value: "WEIGHTS", label: "Weights" },
+  { value: "HIIT", label: "HIIT" },
+  { value: "YOGA", label: "Yoga" },
+  { value: "PILATES", label: "Pilates" },
+  { value: "OTHER", label: "Other" },
 ];
 
-const TIME_PRESETS = ["08:00", "12:00", "18:00"];
+function calcSleepHours(bedTime, wakeTime) {
+  if (!bedTime || !wakeTime) return null;
+  const [bh, bm] = bedTime.split(":").map(Number);
+  const [wh, wm] = wakeTime.split(":").map(Number);
+  if (![bh, bm, wh, wm].every((n) => Number.isFinite(n))) return null;
 
-function startOfDay(d) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
+  // Treat as "last night": if wake is "earlier" than bed, it wraps over midnight
+  const bed = bh * 60 + bm;
+  let wake = wh * 60 + wm;
+  if (wake <= bed) wake += 24 * 60;
+
+  const mins = wake - bed;
+  return mins / 60;
 }
 
-async function logEvent({ event_type, points = 0, meta = null, plan_id = null }) {
-  try {
-    const { data: userData } = await supabase.auth.getUser();
-    const userId = userData?.user?.id;
-    if (!userId) return;
+export default function Dashboard() {
+  const [user, setUser] = useState(null);
 
-    await supabase.from("events").insert({
-      user_id: userId,
-      event_type,
-      points,
-      meta,
-      plan_id,
-    });
-  } catch (e) {
-    console.warn("logEvent failed:", e);
-  }
-}
+  const [settings, setSettings] = useState(null);
 
-async function bootstrapDefaults(userId) {
-  const today = startOfDay(new Date());
-  const tomorrow = startOfDay(addDays(today, 1));
+  const [todayPlan, setTodayPlan] = useState(null);
+  const [tomorrowPlan, setTomorrowPlan] = useState(null);
+  const [weekPlans, setWeekPlans] = useState([]);
 
+  const [weekTab, setWeekTab] = useState("upcoming");
+
+  const [water, setWater] = useState(null);
+  const [supps, setSupps] = useState([]);
+  const [takenMap, setTakenMap] = useState({});
+  const [sleep, setSleep] = useState(null);
+  const [weighIn, setWeighIn] = useState(null);
+
+  const [errMsg, setErrMsg] = useState("");
+
+  const today = useMemo(() => new Date(), []);
+  const tomorrow = useMemo(() => addDays(today, 1), [today]);
   const todayStr = isoDate(today);
   const tomorrowStr = isoDate(tomorrow);
 
-  // profile
-  {
-    const { error } = await supabase
-      .from("user_profiles")
-      .upsert({ user_id: userId, display_name: "" }, { onConflict: "user_id" });
-    if (error) throw error;
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data, error } = await supabase.auth.getUser();
+
+        if (error) throw error;
+        const u = data?.user || null;
+        setUser(u);
+
+        if (!u?.id) return;
+
+        await bootstrapDefaults(u.id);
+        await refreshAll(u.id);
+      } catch (e) {
+        console.warn(e);
+        setErrMsg(e?.message || "Failed to load.");
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function logout() {
+    await supabase.auth.signOut();
+    window.location.href = "/";
   }
 
-// water (today)
+  async function bootstrapDefaults(userId) {
+    // profile
     {
-      // Create row if missing, do NOT reset if it already exists
+      const { error } = await supabase
+        .from("user_profiles")
+        .upsert({ user_id: userId, display_name: "" }, { onConflict: "user_id" });
+      if (error) throw error;
+    }
+
+    // settings
+    {
+      // Keep defaults lightweight — settings page can change everything
+      // Create settings row if missing. IMPORTANT: don't overwrite user-changed settings on every dashboard load.
+      const { error } = await supabase.from("user_settings").upsert(
+        {
+          user_id: userId,
+          mode: "solo",
+          timezone: "Europe/London",
+          water_target_ml: 3000,
+          sleep_target_hours: 8,
+          // activities the user wants to be accountable for
+          included_activities: [
+            "WALK",
+            "RUN",
+            "SPIN",
+            "SWIM",
+            "HILLWALK",
+            "WEIGHTS",
+            "HIIT",
+            "YOGA",
+            "PILATES",
+            "OTHER",
+          ],
+        },
+        { onConflict: "user_id", ignoreDuplicates: true }
+      );
+      if (error) throw error;
+    }
+
+    // water (today)
+    {
+      // Create row if missing, do NOT reset to 0 if it already exists
       const { data: existing, error: selErr } = await supabase
         .from("water_logs")
         .select("user_id")
@@ -90,76 +158,64 @@ async function bootstrapDefaults(userId) {
       }
     }
 
-  // plans (today + tomorrow) must exist
-  await ensurePlan(userId, today);
-  await ensurePlan(userId, tomorrow);
+    // plans (today + tomorrow) must exist
+    await ensurePlan(userId, today);
+    await ensurePlan(userId, tomorrow);
 
-  // default supplements if none exist
-  {
-    const { data, error } = await supabase
+    // default supplements if none exist
+    const { data: existing, error: exErr } = await supabase
       .from("supplements")
       .select("id")
       .eq("user_id", userId)
       .limit(1);
+    if (exErr) throw exErr;
 
-    if (error) throw error;
-
-    if (!data || data.length === 0) {
+    if (!existing || existing.length === 0) {
       const defaults = [
-        { user_id: userId, name: "Creatine", points: 1 },
-        { user_id: userId, name: "Omega-3", points: 1 },
-        { user_id: userId, name: "Vitamin D", points: 1 },
-      ];
+        { name: "Creatine", rule_type: "PRE_WORKOUT", offset_minutes: -45 },
+        { name: "L-Carnitine", rule_type: "PRE_WORKOUT", offset_minutes: -30 },
+        { name: "Cod Liver Oil", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
+        { name: "Tongkat Ali", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
+        { name: "Shilajit", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
+        { name: "Collagen", rule_type: "ANYTIME" },
+        { name: "Ashwagandha", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
+        { name: "Magnesium", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
+        { name: "ZMA", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
+        { name: "B12 Coffee", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
+      ].map((s) => ({ ...s, user_id: userId, points: 0 }));
+
       const { error: insErr } = await supabase.from("supplements").insert(defaults);
       if (insErr) throw insErr;
     }
-  }
 
-  // default sleep row (today)
-  {
-    const { data, error } = await supabase
-      .from("sleep_logs")
-      .select("id")
-      .eq("user_id", userId)
-      .eq("log_date", todayStr)
-      .maybeSingle();
+    // sleep (today row)
+    {
+      const { data: sl, error: slErr } = await supabase
+        .from("sleep_logs")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("log_date", todayStr)
+        .maybeSingle();
+      if (slErr) throw slErr;
 
-    if (error) throw error;
-
-    if (!data?.id) {
-      const { error: insErr } = await supabase.from("sleep_logs").insert({
-        user_id: userId,
-        log_date: todayStr,
-        hours: 0,
-        quality: 0,
-      });
-      if (insErr) throw insErr;
+      if (!sl?.id) {
+        const { error: insErr } = await supabase.from("sleep_logs").insert({
+          user_id: userId,
+          log_date: todayStr,
+          bed_time: null,
+          wake_time: null,
+          quality: 0,
+        });
+        if (insErr) throw insErr;
+      }
     }
   }
 
-  // default weigh-in (latest)
-  {
-    const { data, error } = await supabase
-      .from("weigh_ins")
-      .select("id")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-      .limit(1);
-
-    if (error) throw error;
-
-    if (!data || data.length === 0) {
-      // optional: do nothing
-    }
-  }
-
-  return { todayStr, tomorrowStr };
-}
-
-async function ensurePlan(userId, d) {
+  // ✅ FIX: insert-only (do NOT upsert/reset status/time)
+  async function ensurePlan(userId, d) {
     const dateStr = isoDate(d);
 
-    // If the plan already exists, do nothing (don't overwrite DONE/CANCELLED etc.)
+    // If the plan already exists, do nothing (don't overwrite DONE/CANCELLED/time/etc.)
     const { data: existing, error: selErr } = await supabase
       .from("plans")
       .select("id")
@@ -181,537 +237,547 @@ async function ensurePlan(userId, d) {
     if (insErr) throw insErr;
   }
 
-export default function Dashboard() {
-  const [user, setUser] = useState(null);
-
-  const [todayPlan, setTodayPlan] = useState(null);
-  const [tomorrowPlan, setTomorrowPlan] = useState(null);
-  const [weekPlans, setWeekPlans] = useState([]);
-
-  const [water, setWater] = useState(null);
-
-  const [supps, setSupps] = useState([]);
-  const [takenMap, setTakenMap] = useState({});
-
-  const [sleep, setSleep] = useState(null);
-
-  const [weighIn, setWeighIn] = useState(null);
-
-  const today = useMemo(() => startOfDay(new Date()), []);
-  const tomorrow = useMemo(() => startOfDay(addDays(new Date(), 1)), []);
+  async function fetchPlan(userId, dateStr) {
+    const { data, error } = await supabase
+      .from("plans")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("plan_date", dateStr)
+      .maybeSingle();
+    if (error) throw error;
+    return data;
+  }
 
   async function refreshAll(userId) {
-    const todayStr = isoDate(today);
-    const tomorrowStr = isoDate(tomorrow);
-
-    // fetch plans
+    // settings
     {
-      const { data, error } = await supabase
-        .from("plans")
+      const { data: st, error: stErr } = await supabase
+        .from("user_settings")
         .select("*")
         .eq("user_id", userId)
-        .in("plan_date", [todayStr, tomorrowStr]);
-
-      if (error) {
-        console.warn(error);
-      } else {
-        const t = data?.find((p) => p.plan_date === todayStr) || null;
-        const tm = data?.find((p) => p.plan_date === tomorrowStr) || null;
-        setTodayPlan(t);
-        setTomorrowPlan(tm);
-      }
+        .maybeSingle();
+      if (stErr) throw stErr;
+      setSettings(st || null);
     }
 
-    // fetch week plans
+    // today + tomorrow
+    const tp = await fetchPlan(userId, todayStr);
+    const tomp = await fetchPlan(userId, tomorrowStr);
+    setTodayPlan(tp);
+    setTomorrowPlan(tomp);
+
+    // plans (7 days)
+    const end = isoDate(addDays(today, (7 - today.getDay()) % 7));
     {
-      const start = isoDate(today);
-      const end = isoDate(addDays(today, 6));
-      const { data, error } = await supabase
+      const { data: wp, error: wpErr } = await supabase
         .from("plans")
         .select("*")
         .eq("user_id", userId)
-        .gte("plan_date", start)
+        .gte("plan_date", todayStr)
         .lte("plan_date", end)
-        .order("plan_date", { ascending: true });
-
-      if (error) console.warn(error);
-      else setWeekPlans(data || []);
+        .order("plan_date");
+      if (wpErr) throw wpErr;
+      setWeekPlans(wp || []);
     }
 
     // water
     {
-      const { data, error } = await supabase
+      const { data: w, error: wErr } = await supabase
         .from("water_logs")
         .select("*")
         .eq("user_id", userId)
         .eq("log_date", todayStr)
         .maybeSingle();
-
-      if (error) console.warn(error);
-      else setWater(data || null);
+      if (wErr) throw wErr;
+      setWater(w || null);
     }
 
     // supplements
     {
-      const { data, error } = await supabase
+      const { data: s, error: sErr } = await supabase
         .from("supplements")
         .select("*")
         .eq("user_id", userId)
-        .order("name", { ascending: true });
-
-      if (error) console.warn(error);
-      else setSupps(data || []);
+        .order("name");
+      if (sErr) throw sErr;
+      setSupps(s || []);
     }
 
-    // supplement taken map (today)
+    // supplement logs (today)
     {
-      const { data, error } = await supabase
+      const { data: logs, error: lErr } = await supabase
         .from("supplement_logs")
         .select("*")
         .eq("user_id", userId)
         .eq("log_date", todayStr);
-
-      if (error) console.warn(error);
-      else {
-        const map = {};
-        (data || []).forEach((row) => {
-          map[row.supplement_id] = true;
-        });
-        setTakenMap(map);
-      }
+      if (lErr) throw lErr;
+      const map = {};
+      (logs || []).forEach((r) => {
+        map[r.supplement_id] = true;
+      });
+      setTakenMap(map);
     }
 
     // sleep
     {
-      const { data, error } = await supabase
+      const { data: sl, error: slErr } = await supabase
         .from("sleep_logs")
         .select("*")
         .eq("user_id", userId)
         .eq("log_date", todayStr)
         .maybeSingle();
-
-      if (error) console.warn(error);
-      else setSleep(data || null);
+      if (slErr) throw slErr;
+      setSleep(sl || null);
     }
 
     // weigh-in (latest)
     {
-      const { data, error } = await supabase
+      const { data: w, error: wErr } = await supabase
         .from("weigh_ins")
         .select("*")
         .eq("user_id", userId)
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
-
-      if (error) console.warn(error);
-      else setWeighIn(data || null);
+      if (wErr) throw wErr;
+      setWeighIn(w || null);
     }
-  }
-
-  useEffect(() => {
-    let mounted = true;
-
-    (async () => {
-      const { data, error } = await supabase.auth.getUser();
-      if (error) console.warn(error);
-
-      const u = data?.user || null;
-      if (!mounted) return;
-      setUser(u);
-
-      if (u?.id) {
-        try {
-          await bootstrapDefaults(u.id);
-        } catch (e) {
-          console.warn("bootstrapDefaults failed:", e);
-        }
-        await refreshAll(u.id);
-      }
-    })();
-
-    return () => {
-      mounted = false;
-    };
-  }, [today, tomorrow]);
-
-  async function setPlanStatus(plan, status) {
-    if (!user || !plan) return;
-
-    const { error } = await supabase
-      .from("plans")
-      .update({ status })
-      .eq("id", plan.id);
-
-    if (error) {
-      alert(error.message);
-      return;
-    }
-
-    await refreshAll(user.id);
   }
 
   async function markDone(plan) {
-    if (!user || !plan) return;
-
-    const { error } = await supabase
-      .from("plans")
-      .update({ status: "DONE" })
-      .eq("id", plan.id);
-    if (error) {
-      alert(error.message);
-      return;
+    try {
+      const { error } = await supabase.from("plans").update({ status: "DONE" }).eq("id", plan.id);
+      if (error) throw error;
+      await refreshAll(user.id);
+    } catch (e) {
+      console.warn(e);
+      setErrMsg(e?.message || "Failed to mark done.");
     }
-
-    {
-      const { error: wlErr } = await supabase.from("workout_logs").insert({ plan_id: plan.id });
-      if (wlErr) console.warn("workout_logs insert failed:", wlErr.message);
-    }
-    await logEvent({ event_type: "workout_done", points: 10, plan_id: plan.id });
-
-    await refreshAll(user.id);
   }
 
   async function cancel(plan) {
-    if (!user || !plan) return;
-    const reason = prompt("Reason (illness/work/family/couldn't be bothered)?") || "unspecified";
-
-    const { error } = await supabase
-      .from("plans")
-      .update({ status: "CANCELLED", cancel_reason: reason })
-      .eq("id", plan.id);
-
-    if (error) {
-      alert(error.message);
-      return;
-    }
-
-    await logEvent({ event_type: "workout_cancelled", points: -5, meta: { reason }, plan_id: plan.id });
-
-    await refreshAll(user.id);
-  }
-
-  async function updateWater(newMl) {
-    if (!user) return;
-    const todayStr = isoDate(today);
-
-    // try ml_total first; fallback to ml
-    let err = null;
-    {
-      const { error } = await supabase.from("water_logs").upsert(
-        {
-          user_id: user.id,
-          log_date: todayStr,
-          ml_total: newMl,
-        },
-        { onConflict: "user_id,log_date" }
-      );
-      err = error;
-    }
-
-    if (err && String(err.message || "").toLowerCase().includes("ml_total")) {
-      const { error } = await supabase.from("water_logs").upsert(
-        {
-          user_id: user.id,
-          log_date: todayStr,
-          ml: newMl,
-        },
-        { onConflict: "user_id,log_date" }
-      );
-      err = error;
-    }
-
-    if (err) {
-      alert(err.message);
-      return;
-    }
-
-    await refreshAll(user.id);
-  }
-
-  async function toggleSupplement(supplementId) {
-    if (!user) return;
-
-    const todayStr = isoDate(today);
-    const taken = !!takenMap[supplementId];
-
-    if (taken) {
+    try {
+      const reason = prompt("Reason (illness/work/family/couldn't be bothered)?") || "unspecified";
       const { error } = await supabase
-        .from("supplement_logs")
-        .delete()
+        .from("plans")
+        .update({ status: "CANCELLED", cancel_reason: reason })
+        .eq("id", plan.id);
+      if (error) throw error;
+      await refreshAll(user.id);
+    } catch (e) {
+      console.warn(e);
+      setErrMsg(e?.message || "Failed to cancel.");
+    }
+  }
+
+  async function undoDone(plan) {
+    try {
+      const { error } = await supabase.from("plans").update({ status: "PLANNED" }).eq("id", plan.id);
+      if (error) throw error;
+      await refreshAll(user.id);
+    } catch (e) {
+      console.warn(e);
+      setErrMsg(e?.message || "Failed to undo.");
+    }
+  }
+
+  async function undoCancel(plan) {
+    try {
+      const { error } = await supabase
+        .from("plans")
+        .update({ status: "PLANNED", cancel_reason: null })
+        .eq("id", plan.id);
+      if (error) throw error;
+      await refreshAll(user.id);
+    } catch (e) {
+      console.warn(e);
+      setErrMsg(e?.message || "Failed to undo.");
+    }
+  }
+
+  async function moveTodayTime(t) {
+    try {
+      const { error } = await supabase.from("plans").update({ planned_time: t || null }).eq("id", todayPlan.id);
+      if (error) throw error;
+      await refreshAll(user.id);
+    } catch (e) {
+      console.warn(e);
+      setErrMsg(e?.message || "Failed to update time.");
+    }
+  }
+
+  async function setTomorrowTime(t) {
+    try {
+      const { error } = await supabase.from("plans").update({ planned_time: t || null }).eq("id", tomorrowPlan.id);
+      if (error) throw error;
+      await refreshAll(user.id);
+    } catch (e) {
+      console.warn(e);
+      setErrMsg(e?.message || "Failed to update time.");
+    }
+  }
+
+  async function addWater(delta) {
+    try {
+      const current = water?.ml_total ?? water?.ml ?? 0;
+      const next = Math.max(0, current + delta);
+
+      // try ml_total first; fallback to ml
+      let err = null;
+      {
+        const { error } = await supabase.from("water_logs").upsert(
+          { user_id: user.id, log_date: todayStr, ml_total: next },
+          { onConflict: "user_id,log_date" }
+        );
+        err = error;
+      }
+      if (err && String(err.message || "").toLowerCase().includes("ml_total")) {
+        const { error } = await supabase.from("water_logs").upsert(
+          { user_id: user.id, log_date: todayStr, ml: next },
+          { onConflict: "user_id,log_date" }
+        );
+        err = error;
+      }
+      if (err) throw err;
+
+      await refreshAll(user.id);
+    } catch (e) {
+      console.warn(e);
+      setErrMsg(e?.message || "Failed to update water.");
+    }
+  }
+
+  function suppWhenLabel(s, plannedTime) {
+    const rt = s.rule_type;
+    if (rt === "ANYTIME") return "Anytime";
+    if (rt === "MORNING_WINDOW") return `${s.window_start || "06:00"}–${s.window_end || "10:00"}`;
+    if (rt === "EVENING_WINDOW") return `${s.window_start || "18:00"}–${s.window_end || "23:59"}`;
+    if (rt === "PRE_WORKOUT") {
+      if (!plannedTime) return "Before workout";
+      const off = Number(s.offset_minutes || 0);
+      return `${Math.abs(off)}m before`;
+    }
+    return "";
+  }
+
+  async function tickSupplement(supplementId) {
+    try {
+      const taken = !!takenMap[supplementId];
+
+      if (taken) {
+        const { error } = await supabase
+          .from("supplement_logs")
+          .delete()
+          .eq("user_id", user.id)
+          .eq("supplement_id", supplementId)
+          .eq("log_date", todayStr);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from("supplement_logs").insert({
+          user_id: user.id,
+          supplement_id: supplementId,
+          log_date: todayStr,
+        });
+        if (error) throw error;
+      }
+
+      await refreshAll(user.id);
+    } catch (e) {
+      console.warn(e);
+      setErrMsg(e?.message || "Failed to toggle supplement.");
+    }
+  }
+
+  async function updateSleepField(field, value) {
+    try {
+      const { error } = await supabase
+        .from("sleep_logs")
+        .update({ [field]: value })
         .eq("user_id", user.id)
-        .eq("supplement_id", supplementId)
         .eq("log_date", todayStr);
-
-      if (error) {
-        alert(error.message);
-        return;
-      }
-
-      await logEvent({ event_type: "supplement_untake", points: -1, meta: { supplement_id: supplementId } });
-    } else {
-      const { error } = await supabase.from("supplement_logs").insert({
-        user_id: user.id,
-        supplement_id: supplementId,
-        log_date: todayStr,
-      });
-
-      if (error) {
-        alert(error.message);
-        return;
-      }
-
-      await logEvent({ event_type: "supplement_take", points: 1, meta: { supplement_id: supplementId } });
+      if (error) throw error;
+      await refreshAll(user.id);
+    } catch (e) {
+      console.warn(e);
+      setErrMsg(e?.message || "Failed to update sleep.");
     }
-
-    await refreshAll(user.id);
   }
 
-  async function updateSleep(patch) {
-    if (!user) return;
-    const todayStr = isoDate(today);
-
-    const { error } = await supabase
-      .from("sleep_logs")
-      .update(patch)
-      .eq("user_id", user.id)
-      .eq("log_date", todayStr);
-
-    if (error) {
-      alert(error.message);
-      return;
-    }
-
-    await refreshAll(user.id);
-  }
-
-  if (!user) {
+  // -----------------
+  // Render
+  // -----------------
+  if (errMsg) {
     return (
-      <div>
-        <TopNav />
-        <div style={{ padding: 18 }}>Loading…</div>
+      <div style={{ padding: 20, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
+        <TopNav active="dashboard" onLogout={logout} />
+        <h2>Pact</h2>
+        <p>
+          <b>Error:</b> {errMsg}
+        </p>
+        <button onClick={logout}>Logout</button>
       </div>
     );
   }
 
-  const waterMl = water?.ml_total ?? water?.ml ?? 0;
+  if (todayPlan === null || tomorrowPlan === null) {
+    return <div style={{ padding: 20, fontFamily: "system-ui" }}>Loading…</div>;
+  }
+
+  if (!todayPlan || !tomorrowPlan) {
+    return (
+      <div style={{ padding: 20, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
+        <h2>Pact</h2>
+        <p>Couldn’t load today/tomorrow plans.</p>
+        <button style={{ width: "100%", padding: 12 }} onClick={() => window.location.reload()}>
+          Reload
+        </button>
+      </div>
+    );
+  }
+
+  const waterTargetMl = settings?.water_target_ml || 3000;
+  const sleepTargetHours = settings?.sleep_target_hours ?? 8;
+  const slept = calcSleepHours(sleep?.bed_time, sleep?.wake_time);
 
   return (
-    <div>
-      <TopNav />
+    <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+        <h2 style={{ margin: 0 }}>Pact</h2>
+        <div style={{ display: "flex", gap: 8 }}>
+          <a
+            href="/team"
+            style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}
+          >
+            Pact
+          </a>
+          <a
+            href="/profile"
+            style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}
+          >
+            Profile
+          </a>
+          <a
+            href="/settings"
+            style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}
+          >
+            Settings
+          </a>
+          <button onClick={logout}>Logout</button>
+        </div>
+      </div>
 
-      <div style={{ padding: 18, maxWidth: 980, margin: "0 auto" }}>
-        <h1 style={{ margin: "0 0 14px" }}>Dashboard</h1>
-
-        {/* TODAY */}
-        <div style={{ padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12, marginBottom: 16 }}>
-          <h2 style={{ margin: "0 0 10px" }}>Today</h2>
-
-          {todayPlan ? (
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontWeight: 700 }}>{todayPlan.plan_type}</div>
-                <div style={{ opacity: 0.75, fontSize: 13 }}>
-                  Status: <b>{todayPlan.status}</b>
-                </div>
-              </div>
-
-              <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button onClick={() => markDone(todayPlan)}>Done</button>
-                <button onClick={() => cancel(todayPlan)}>Cancel</button>
-                <button onClick={() => setPlanStatus(todayPlan, "PLANNED")}>Reset</button>
-              </div>
-            </div>
-          ) : (
-            <div style={{ opacity: 0.7 }}>No plan found.</div>
-          )}
+      {/* TODAY */}
+      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Today</div>
+        <div style={{ fontSize: 26, fontWeight: 800 }}>
+          {todayPlan.plan_type} {todayPlan.planned_time ? `— ${todayPlan.planned_time}` : ""}
         </div>
 
-        {/* TOMORROW */}
-        <div style={{ padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12, marginBottom: 16 }}>
-          <h2 style={{ margin: "0 0 10px" }}>Tomorrow</h2>
-
-          {tomorrowPlan ? (
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontWeight: 700 }}>{tomorrowPlan.plan_type}</div>
-                <div style={{ opacity: 0.75, fontSize: 13 }}>
-                  Status: <b>{tomorrowPlan.status}</b>
-                </div>
-              </div>
-
-              <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button onClick={() => setPlanStatus(tomorrowPlan, "DONE")}>Done</button>
-                <button onClick={() => setPlanStatus(tomorrowPlan, "CANCELLED")}>Cancel</button>
-                <button onClick={() => setPlanStatus(tomorrowPlan, "PLANNED")}>Reset</button>
-              </div>
+        {todayPlan.plan_type !== "REST" && todayPlan.status === "PLANNED" && (
+          <>
+            <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+              <button style={{ flex: 1, padding: 14, fontSize: 16, fontWeight: 800 }} onClick={() => markDone(todayPlan)}>
+                DONE
+              </button>
+              <button style={{ flex: 1, padding: 14, fontSize: 16, fontWeight: 800 }} onClick={() => cancel(todayPlan)}>
+                CANCEL
+              </button>
             </div>
-          ) : (
-            <div style={{ opacity: 0.7 }}>No plan found.</div>
-          )}
+
+            <div style={{ marginTop: 12, fontSize: 14, opacity: 0.8 }}>Move time (same day)</div>
+            <input
+              type="time"
+              value={todayPlan.planned_time || ""}
+              onChange={(e) => moveTodayTime(e.target.value)}
+              style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 8 }}
+            />
+          </>
+        )}
+
+        {todayPlan.status !== "PLANNED" && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontWeight: 800 }}>
+              Status: {todayPlan.status}
+              {todayPlan.cancel_reason ? ` (${todayPlan.cancel_reason})` : ""}
+            </div>
+
+            {todayPlan.status === "DONE" && (
+              <button style={{ width: "100%", padding: 12, marginTop: 10 }} onClick={() => undoDone(todayPlan)}>
+                I LIED — UNDO DONE
+              </button>
+            )}
+
+            {todayPlan.status === "CANCELLED" && (
+              <button style={{ width: "100%", padding: 12, marginTop: 10 }} onClick={() => undoCancel(todayPlan)}>
+                UNDO CANCEL
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* TOMORROW */}
+      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Tomorrow (set by 23:59)</div>
+        <div style={{ fontSize: 22, fontWeight: 800 }}>
+          {tomorrowPlan.plan_type} {tomorrowPlan.planned_time ? `— ${tomorrowPlan.planned_time}` : "— not set"}
         </div>
 
-        {/* WATER */}
-        <div style={{ padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12, marginBottom: 16 }}>
-          <h2 style={{ margin: "0 0 10px" }}>Water</h2>
+        {tomorrowPlan.plan_type !== "REST" ? (
+          <input
+            type="time"
+            value={tomorrowPlan.planned_time || ""}
+            onChange={(e) => setTomorrowTime(e.target.value)}
+            style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 10 }}
+          />
+        ) : (
+          <div style={{ marginTop: 10, opacity: 0.8 }}>Rest day. No time required.</div>
+        )}
+      </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <div style={{ fontWeight: 700 }}>{waterMl} ml</div>
+      {/* WEEK PLAN CTA */}
+      <div style={{ marginTop: 14 }}>
+        <a
+          href="/week-plan"
+          style={{
+            display: "block",
+            padding: 12,
+            border: "1px solid #ddd",
+            borderRadius: 12,
+            textAlign: "center",
+            textDecoration: "none",
+            fontWeight: 800,
+          }}
+        >
+          Edit week plan
+        </a>
+      </div>
 
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button onClick={() => updateWater(Math.max(0, waterMl - 250))}>-250</button>
-              <button onClick={() => updateWater(waterMl + 250)}>+250</button>
-              <button onClick={() => updateWater(waterMl + 500)}>+500</button>
-              <button onClick={() => updateWater(0)}>Reset</button>
-            </div>
+      {/* UPCOMING vs COMPLETED */}
+      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            style={{ flex: 1, padding: 10, fontWeight: 800, opacity: weekTab === "upcoming" ? 1 : 0.5 }}
+            onClick={() => setWeekTab("upcoming")}
+          >
+            Upcoming
+          </button>
+          <button
+            style={{ flex: 1, padding: 10, fontWeight: 800, opacity: weekTab === "completed" ? 1 : 0.5 }}
+            onClick={() => setWeekTab("completed")}
+          >
+            Completed
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+          {weekPlans
+            .filter((p) => (weekTab === "completed" ? p.status === "DONE" : p.status !== "DONE"))
+            .map((p) => (
+              <div key={p.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
+                <div style={{ fontWeight: 800 }}>
+                  {p.plan_date} — {p.plan_type} {p.planned_time ? `(${p.planned_time})` : ""}
+                </div>
+                <div>Status: {p.status}</div>
+              </div>
+            ))}
+        </div>
+      </div>
+
+      {/* WATER */}
+      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Water (target {(waterTargetMl / 1000).toFixed(1)}L)</div>
+        <div style={{ fontSize: 22, fontWeight: 800 }}>{water?.ml_total ?? water?.ml ?? 0} ml</div>
+        <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+          <button style={{ flex: 1, padding: 12, fontSize: 16 }} onClick={() => addWater(250)}>
+            +250
+          </button>
+          <button style={{ flex: 1, padding: 12, fontSize: 16 }} onClick={() => addWater(500)}>
+            +500
+          </button>
+        </div>
+      </div>
+
+      {/* SUPPS (separate box) */}
+      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Supplements (tap to toggle)</div>
+        <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+          {supps.map((s) => (
+            <button
+              key={s.id}
+              style={{ padding: 12, textAlign: "left", fontSize: 16, opacity: takenMap[s.id] ? 0.45 : 1 }}
+              onClick={() => tickSupplement(s.id)}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <div style={{ fontWeight: 800 }}>
+                  {takenMap[s.id] ? "✅" : "⬜"} {s.name}
+                </div>
+                <div style={{ opacity: 0.7, fontSize: 13 }}>{suppWhenLabel(s, todayPlan?.planned_time)}</div>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* SLEEP (separate box) */}
+      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>
+          Sleep (last night) — target {sleepTargetHours}h
+        </div>
+
+        {slept != null && (
+          <div style={{ marginTop: 10, fontSize: 22, fontWeight: 800 }}>{slept.toFixed(1)}h</div>
+        )}
+
+        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+          <div>
+            <div style={{ fontSize: 14, opacity: 0.8 }}>Bed time</div>
+            <input
+              type="time"
+              value={sleep?.bed_time || ""}
+              onChange={(e) => updateSleepField("bed_time", e.target.value || null)}
+              style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 8 }}
+            />
+          </div>
+
+          <div>
+            <div style={{ fontSize: 14, opacity: 0.8 }}>Wake time</div>
+            <input
+              type="time"
+              value={sleep?.wake_time || ""}
+              onChange={(e) => updateSleepField("wake_time", e.target.value || null)}
+              style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 8 }}
+            />
+          </div>
+
+          <div>
+            <div style={{ fontSize: 14, opacity: 0.8 }}>Quality (0–10)</div>
+            <input
+              type="number"
+              min="0"
+              max="10"
+              value={sleep?.quality ?? 0}
+              onChange={(e) => updateSleepField("quality", Number(e.target.value || 0))}
+              style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 8 }}
+            />
           </div>
         </div>
+      </div>
 
-        {/* SUPPLEMENTS */}
-        <div style={{ padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12, marginBottom: 16 }}>
-          <h2 style={{ margin: "0 0 10px" }}>Supplements</h2>
-
-          <div style={{ display: "grid", gap: 8 }}>
-            {supps.map((s) => {
-              const taken = !!takenMap[s.id];
-              return (
-                <div
-                  key={s.id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    padding: 10,
-                    borderRadius: 10,
-                    border: "1px solid rgba(0,0,0,.08)",
-                  }}
-                >
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700 }}>{s.name}</div>
-                    <div style={{ opacity: 0.7, fontSize: 13 }}>{s.points || 0} pts</div>
-                  </div>
-
-                  <button onClick={() => toggleSupplement(s.id)}>{taken ? "Undo" : "Done"}</button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* SLEEP */}
-        <div style={{ padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12, marginBottom: 16 }}>
-          <h2 style={{ margin: "0 0 10px" }}>Sleep</h2>
-
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              Hours:
-              <input
-                type="number"
-                min="0"
-                step="0.25"
-                value={sleep?.hours ?? 0}
-                onChange={(e) => updateSleep({ hours: Number(e.target.value || 0) })}
-                style={{ width: 90 }}
-              />
-            </label>
-
-            <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              Quality (0-10):
-              <input
-                type="number"
-                min="0"
-                max="10"
-                step="1"
-                value={sleep?.quality ?? 0}
-                onChange={(e) => updateSleep({ quality: Number(e.target.value || 0) })}
-                style={{ width: 90 }}
-              />
-            </label>
-          </div>
-        </div>
-
-        {/* WEIGH-IN */}
-        <div style={{ padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12, marginBottom: 16 }}>
-          <h2 style={{ margin: "0 0 10px" }}>Weigh-in</h2>
+      {/* WEIGH-IN */}
+      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Weigh-in</div>
+        <div style={{ marginTop: 8 }}>
           {weighIn ? (
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
-              <div style={{ fontWeight: 700 }}>{weighIn.weight ?? weighIn.kg ?? "—"}</div>
-              <div style={{ opacity: 0.7, fontSize: 13 }}>
+            <div style={{ fontWeight: 800 }}>
+              {weighIn.weight ?? weighIn.kg ?? "—"}{" "}
+              <span style={{ opacity: 0.7, fontWeight: 500, fontSize: 13 }}>
                 {weighIn.created_at ? new Date(weighIn.created_at).toLocaleString() : ""}
-              </div>
+              </span>
             </div>
           ) : (
             <div style={{ opacity: 0.7 }}>No weigh-in yet.</div>
           )}
-        </div>
-
-        {/* WEEK */}
-        <div style={{ padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12 }}>
-          <h2 style={{ margin: "0 0 10px" }}>This week</h2>
-
-          <div style={{ display: "grid", gap: 8 }}>
-            {weekPlans.map((p) => (
-              <div
-                key={p.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: 10,
-                  borderRadius: 10,
-                  border: "1px solid rgba(0,0,0,.08)",
-                }}
-              >
-                <div style={{ width: 110, fontFamily: "monospace", fontSize: 13 }}>{p.plan_date}</div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 700 }}>{p.plan_type}</div>
-                  <div style={{ opacity: 0.7, fontSize: 13 }}>
-                    Status: <b>{p.status}</b>
-                    {p.cancel_reason ? ` · ${p.cancel_reason}` : ""}
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <select
-                    value={p.plan_type}
-                    onChange={async (e) => {
-                      const newType = e.target.value;
-                      const { error } = await supabase
-                        .from("plans")
-                        .update({ plan_type: newType })
-                        .eq("id", p.id);
-
-                      if (error) alert(error.message);
-                      else refreshAll(user.id);
-                    }}
-                  >
-                    {ALL_ACTIVITIES.map((a) => (
-                      <option key={a.value} value={a.value}>
-                        {a.label}
-                      </option>
-                    ))}
-                  </select>
-
-                  <select
-                    value={p.time || ""}
-                    onChange={async (e) => {
-                      const t = e.target.value || null;
-                      const { error } = await supabase.from("plans").update({ time: t }).eq("id", p.id);
-                      if (error) alert(error.message);
-                      else refreshAll(user.id);
-                    }}
-                  >
-                    <option value="">Time</option>
-                    {TIME_PRESETS.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            ))}
-          </div>
         </div>
       </div>
     </div>
