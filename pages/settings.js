@@ -1,6 +1,7 @@
 // pages/settings.js
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
+import { initOneSignal } from "../lib/onesignal";
 
 const TONE_OPTIONS = [
   { value: "normal", label: "Normal" },
@@ -77,10 +78,10 @@ export default function Settings() {
             water_target_ml: 3000,
             sleep_target_hours: 8,
             reminder_times: ["08:00", "12:00", "18:00"],
-            included_activities: ["WALK", "RUN", "SPIN", "HIIT", "SWIM", "WEIGHTS"],
+            included_activities: ["WALK", "RUN", "SPIN", "SWIM", "HILLWALK", "WEIGHTS", "HIIT", "YOGA", "PILATES", "OTHER"],
             timezone: "Europe/London",
           },
-          { onConflict: "user_id" }
+          { onConflict: "user_id", ignoreDuplicates: true }
         );
 
         await refresh(data.user.id);
@@ -135,7 +136,7 @@ export default function Settings() {
     if (!user) return;
     const { error } = await supabase
       .from("user_settings")
-      .update({ ...patch, updated_at: new Date().toISOString() })
+      .update({ ...patch })
       .eq("user_id", user.id);
     if (error) alert(error.message);
     await refresh(user.id);
@@ -145,10 +146,27 @@ export default function Settings() {
     if (!user) return;
     const { error } = await supabase
       .from("supplements")
-      .update({ active: !s.active, updated_at: new Date().toISOString() })
+      .update({ active: !s.active })
       .eq("id", s.id);
     if (error) alert(error.message);
     await refresh(user.id);
+  }
+
+  async function enablePushNow() {
+    if (!user) return;
+    try {
+      const playerId = await initOneSignal();
+      if (!playerId) return alert("Push not enabled (no player id returned)");
+
+      const { error } = await supabase
+        .from("push_devices")
+        .upsert({ user_id: user.id, onesignal_player_id: playerId }, { onConflict: "user_id" });
+      if (error) return alert(error.message);
+
+      alert("Push enabled ✅");
+    } catch (e) {
+      alert(e?.message || String(e));
+    }
   }
 
   async function logout() {
@@ -219,6 +237,17 @@ export default function Settings() {
         </div>
         <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
           These are used for push notifications. If push is disabled, they do nothing.
+        </div>
+      </div>
+
+      {/* PUSH */}
+      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Push notifications</div>
+        <button style={{ width: "100%", padding: 12, marginTop: 10, fontSize: 16, fontWeight: 800 }} onClick={enablePushNow}>
+          Enable push
+        </button>
+        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
+          Android tip: if you tapped “Block” earlier, you need to allow notifications for your browser in Android settings.
         </div>
       </div>
 
