@@ -1,6 +1,8 @@
 // pages/profile.js
 import { useEffect, useMemo, useState } from "react";
+import TopNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
+import { enablePush, initOneSignal, onesignalHints } from "../lib/onesignal";
 
 function startOfWeek(d) {
   // Monday as start
@@ -25,9 +27,9 @@ export default function Profile() {
   const [profile, setProfile] = useState(null);
   const [weekPoints, setWeekPoints] = useState(0);
   const [weekDoneCount, setWeekDoneCount] = useState(0);
+  const [pushId, setPushId] = useState(null);
+  const [pushMsg, setPushMsg] = useState("");
   const [err, setErr] = useState("");
-  const [draftName, setDraftName] = useState("");
-  const [saving, setSaving] = useState(false);
 
   const now = useMemo(() => new Date(), []);
   const weekStart = useMemo(() => startOfWeek(now), [now]);
@@ -53,6 +55,12 @@ export default function Profile() {
           .upsert({ user_id: data.user.id, display_name: "" }, { onConflict: "user_id" });
 
         await refresh(data.user.id);
+
+        // safe init (no prompt)
+        try {
+          const id = await initOneSignal();
+          if (id) setPushId(id);
+        } catch {}
       } catch (e) {
         setErr(e?.message || String(e));
       }
@@ -67,15 +75,14 @@ export default function Profile() {
       .maybeSingle();
     if (pErr) throw pErr;
     setProfile(p || null);
-    setDraftName(p?.display_name || "");
 
     // points this week
     const { data: pts, error: ptsErr } = await supabase
-      .from("activity_events")
-      .select("points,event_date")
+      .from("points_events")
+      .select("points,created_at")
       .eq("user_id", userId)
-      .gte("event_date", isoDay(weekStart))
-      .lt("event_date", isoDay(weekEnd));
+      .gte("created_at", weekStart.toISOString())
+      .lt("created_at", weekEnd.toISOString());
     if (!ptsErr) {
       const total = (pts || []).reduce((sum, r) => sum + Number(r.points || 0), 0);
       setWeekPoints(total);
@@ -94,36 +101,38 @@ export default function Profile() {
 
   async function saveDisplayName(name) {
     if (!user) return;
-    const next = (name || "").trim();
-    setSaving(true);
-
-    // Try update first (avoids duplicate rows if unique constraint isn't present yet)
-    const { data: upd, error: uErr } = await supabase
+    const { error } = await supabase
       .from("user_profiles")
-      .update({ display_name: next })
-      .eq("user_id", user.id)
-      .select("user_id")
-      .maybeSingle();
+      .update({ display_name: name, updated_at: new Date().toISOString() })
+      .eq("user_id", user.id);
+    if (error) alert(error.message);
+    await refresh(user.id);
+  }
 
-    if (uErr) {
-      setSaving(false);
-      alert(uErr.message);
+  async function subscribePush() {
+    if (!user) return;
+    setPushMsg("");
+
+    const { isIOS, isStandalone } = onesignalHints();
+
+    const res = await enablePush();
+    setPushMsg(res.reason || "");
+
+    if (res.ok && res.id) {
+      setPushId(res.id);
+      await supabase.from("push_devices").upsert(
+        { user_id: user.id, onesignal_player_id: res.id, updated_at: new Date().toISOString() },
+        { onConflict: "user_id" }
+      );
+      alert("Push enabled ✅");
       return;
     }
 
-    if (!upd) {
-      const { error: iErr } = await supabase
-        .from("user_profiles")
-        .insert({ user_id: user.id, display_name: next });
-      if (iErr) {
-        setSaving(false);
-        alert(iErr.message);
-        return;
-      }
+    if (isIOS && !isStandalone) {
+      alert("On iPhone/iPad: install the app (Add to Home Screen) then try again.");
+      return;
     }
-
-    setSaving(false);
-    await refresh(user.id);
+    alert(res.reason || "Push not enabled.");
   }
 
   async function logout() {
@@ -134,6 +143,7 @@ export default function Profile() {
   if (err) {
     return (
       <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
+      <TopNav active="profile" onLogout={logout} />
         <h2>Profile</h2>
         <div><b>Error:</b> {err}</div>
         <button style={{ marginTop: 12 }} onClick={logout}>Logout</button>
@@ -155,18 +165,11 @@ export default function Profile() {
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Display name</div>
         <input
-          value={draftName}
-          onChange={(e) => setDraftName(e.target.value)}
+          value={profile.display_name || ""}
+          onChange={(e) => saveDisplayName(e.target.value)}
           placeholder="Your name"
           style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 10 }}
         />
-        <button
-          style={{ width: "100%", padding: 12, marginTop: 10, fontWeight: 900, opacity: saving ? 0.7 : 1 }}
-          onClick={() => saveDisplayName(draftName)}
-          disabled={saving}
-        >
-          Save name
-        </button>
         <div style={{ marginTop: 10, fontSize: 13, opacity: 0.75 }}>
           Email: <b>{user.email}</b>
         </div>
@@ -181,6 +184,15 @@ export default function Profile() {
         <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
           Week: {isoDay(weekStart)} → {isoDay(weekEnd)}
         </div>
+      </div>
+
+      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Push notifications</div>
+        <div style={{ marginTop: 6, fontWeight: 800 }}>{pushId ? "enabled" : "not enabled"}</div>
+        {pushMsg ? <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>{pushMsg}</div> : null}
+        <button style={{ width: "100%", padding: 12, marginTop: 10, fontWeight: 900 }} onClick={subscribePush}>
+          Enable push
+        </button>
       </div>
 
       <div style={{ marginTop: 14 }}>
