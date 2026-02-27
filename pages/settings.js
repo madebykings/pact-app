@@ -1,5 +1,4 @@
-// pages/settings.js
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import TopNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
 import { enablePush, onesignalHints } from "../lib/onesignal";
@@ -59,13 +58,30 @@ async function ensureUserSettingsRow(userId) {
     const { error: insErr } = await supabase.from("user_settings").insert({
       user_id: userId,
       mode: "solo",
-      tone_mode: "normal",
+      tone: "normal",
       water_target_ml: 3000,
       sleep_target_hours: 8,
       reminder_times: ["08:00", "12:00", "18:00"],
       included_activities: ["WALK", "RUN", "SPIN", "SWIM", "HILLWALK", "WEIGHTS", "HIIT", "YOGA", "PILATES", "MOBILITY", "OTHER"],
       timezone: "Europe/London",
+      target_weight_kg: null,
     });
+    if (insErr) throw insErr;
+  }
+}
+
+async function ensureProfileRow(userId) {
+  const { data: existing, error } = await supabase
+    .from("user_profiles")
+    .select("user_id")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw error;
+
+  if (!existing) {
+    const { error: insErr } = await supabase
+      .from("user_profiles")
+      .insert({ user_id: userId, display_name: "" });
     if (insErr) throw insErr;
   }
 }
@@ -76,6 +92,10 @@ export default function Settings() {
   const [profile, setProfile] = useState(null);
   const [supps, setSupps] = useState([]);
   const [err, setErr] = useState("");
+
+  // target weight draft + debounce (stops “buggy while typing”)
+  const [targetDraft, setTargetDraft] = useState("");
+  const targetTimer = useRef(null);
 
   const reminderTimes = useMemo(() => {
     const t = settings?.reminder_times;
@@ -98,30 +118,18 @@ export default function Settings() {
 
         setUser(data.user);
 
-        // ✅ IMPORTANT FIX: do NOT overwrite settings on every page load
         await ensureUserSettingsRow(data.user.id);
-
-        // Ensure profile row exists WITHOUT overwriting existing values
-const { data: existingProfile, error: profSelErr } = await supabase
-  .from("user_profiles")
-  .select("user_id")
-  .eq("user_id", data.user.id)
-  .maybeSingle();
-
-if (profSelErr) throw profSelErr;
-
-if (!existingProfile) {
-  const { error: profInsErr } = await supabase
-    .from("user_profiles")
-    .insert({ user_id: data.user.id, display_name: "" });
-  if (profInsErr) throw profInsErr;
-}
+        await ensureProfileRow(data.user.id);
 
         await refresh(data.user.id);
       } catch (e) {
         setErr(e?.message || String(e));
       }
     })();
+
+    return () => {
+      if (targetTimer.current) clearTimeout(targetTimer.current);
+    };
   }, []);
 
   async function refresh(userId) {
@@ -132,6 +140,7 @@ if (!existingProfile) {
       .maybeSingle();
     if (stErr) throw stErr;
     setSettings(st || null);
+    setTargetDraft(st?.target_weight_kg ?? "");
 
     const { data: p, error: pErr } = await supabase
       .from("user_profiles")
@@ -151,7 +160,6 @@ if (!existingProfile) {
   async function saveSettings(patch) {
     if (!user) return;
 
-    // optimistic UI
     setSettings((prev) => ({ ...(prev || {}), ...patch }));
 
     const { error } = await supabase.from("user_settings").update(patch).eq("user_id", user.id);
@@ -163,51 +171,47 @@ if (!existingProfile) {
     await refresh(user.id);
   }
 
-  // ✅ Target weight: try user_settings.target_weight_kg first, fallback to user_profiles.target_weight_kg
+  function scheduleTargetSave(val) {
+    setTargetDraft(val);
+
+    if (targetTimer.current) clearTimeout(targetTimer.current);
+    targetTimer.current = setTimeout(() => saveTargetWeightKg(val), 500);
+  }
+
   async function saveTargetWeightKg(val) {
     if (!user) return;
-    const n = Number(val);
-    const next = Number.isFinite(n) ? n : null;
 
-    // try user_settings
-    {
+    const s = String(val ?? "").trim();
+    if (s === "") {
       const { error } = await supabase
         .from("user_settings")
-        .update({ target_weight_kg: next })
+        .update({ target_weight_kg: null })
         .eq("user_id", user.id);
-
-      if (!error) {
-        await refresh(user.id);
-        return;
-      }
-
-      // if column doesn't exist, fallback to user_profiles
-      const msg = String(error.message || "").toLowerCase();
-      if (!msg.includes("target_weight_kg") && !msg.includes("column")) {
-        alert(error.message);
-        await refresh(user.id);
-        return;
-      }
-    }
-
-    // fallback to user_profiles
-    {
-      const { error } = await supabase
-        .from("user_profiles")
-        .update({ target_weight_kg: next })
-        .eq("user_id", user.id);
-
-      if (error) {
-        alert(error.message);
-        await refresh(user.id);
-        return;
-      }
+      if (error) alert(error.message);
       await refresh(user.id);
+      return;
     }
+
+    const n = Number(s);
+    if (!Number.isFinite(n)) return;
+
+    // respect your DB check constraint (30–250)
+    if (n < 30 || n > 250) return;
+
+    const { error } = await supabase
+      .from("user_settings")
+      .update({ target_weight_kg: n })
+      .eq("user_id", user.id);
+
+    if (error) {
+      alert(error.message);
+      await refresh(user.id);
+      return;
+    }
+    await refresh(user.id);
   }
 
   async function toggleSupplementActive(s) {
-    // Some schemas may not have `active` (but yours appears to, given your UI)
     const { error } = await supabase.from("supplements").update({ active: !s.active }).eq("id", s.id);
     if (error) {
       alert(error.message);
@@ -222,11 +226,14 @@ if (!existingProfile) {
     const res = await enablePush();
 
     if (res.ok && res.id) {
-      const { error } = await supabase
-        .from("push_devices")
-        .upsert({ user_id: user.id, onesignal_player_id: res.id }, { onConflict: "user_id" });
-
-      if (error) console.warn("push_devices upsert failed:", error.message);
+      // ✅ FIX: your unique is (user_id, onesignal_player_id) so onConflict:"user_id" is wrong.
+      // easiest: keep 1 device per user by delete+insert
+      await supabase.from("push_devices").delete().eq("user_id", user.id);
+      const { error } = await supabase.from("push_devices").insert({
+        user_id: user.id,
+        onesignal_player_id: res.id,
+      });
+      if (error) console.warn("push_devices insert failed:", error.message);
 
       alert("Push enabled ✅");
       return;
@@ -238,7 +245,6 @@ if (!existingProfile) {
       return;
     }
 
-    // Only show "blocked" copy when the browser is actually denied.
     const perm = typeof Notification !== "undefined" ? Notification.permission : "default";
     if (perm === "denied" || (res.reason || "").toLowerCase().includes("blocked/denied")) {
       alert("Push permission is blocked. Allow notifications for this site in your browser settings, then try again.");
@@ -276,10 +282,6 @@ if (!existingProfile) {
     );
   }
 
-  const targetWeightFromSettings = settings?.target_weight_kg;
-  const targetWeightFromProfile = profile?.target_weight_kg;
-  const targetWeightValue = targetWeightFromSettings ?? targetWeightFromProfile ?? "";
-
   return (
     <div>
       <TopNav active="settings" onLogout={logout} />
@@ -287,12 +289,12 @@ if (!existingProfile) {
       <div style={{ padding: 18, maxWidth: 980, margin: "0 auto" }}>
         <h1 style={{ margin: "0 0 14px" }}>Settings</h1>
 
-        {/* Tone */}
+        {/* Tone (DB column: tone) */}
         <div style={{ padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12, marginBottom: 16 }}>
           <div style={{ fontSize: 14, opacity: 0.8 }}>Tone</div>
           <select
-            value={settings.tone_mode || "normal"}
-            onChange={(e) => saveSettings({ tone_mode: e.target.value })}
+            value={settings.tone || "normal"}
+            onChange={(e) => saveSettings({ tone: e.target.value })}
             style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 10 }}
           >
             {TONE_OPTIONS.map((o) => (
@@ -322,8 +324,6 @@ if (!existingProfile) {
               />
             ))}
           </div>
-
-          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>These are used for reminders and nudges.</div>
         </div>
 
         {/* Targets */}
@@ -357,13 +357,13 @@ if (!existingProfile) {
               <input
                 type="number"
                 step="0.1"
-                value={targetWeightValue}
-                onChange={(e) => saveTargetWeightKg(e.target.value)}
+                value={targetDraft}
+                onChange={(e) => scheduleTargetSave(e.target.value)}
                 style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 6 }}
                 placeholder="e.g. 95.0"
               />
               <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
-                Used for trend + motivation messaging. (If your DB doesn’t have this column yet, it will need adding.)
+                Saves after you stop typing. Valid range: 30–250kg.
               </div>
             </div>
           </div>
@@ -422,10 +422,6 @@ if (!existingProfile) {
             ))}
             {supps.length === 0 && <div style={{ opacity: 0.7 }}>No supplements found.</div>}
           </div>
-
-          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
-            Dashboard should only show active supplements. (Next: update dashboard query to `.eq("active", true)`.)
-          </div>
         </div>
 
         {/* Push */}
@@ -435,7 +431,7 @@ if (!existingProfile) {
             Enable push
           </button>
           <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
-            If you see “no player id returned”, it’s usually because the browser blocked permission or iOS isn’t installed as a PWA.
+            If permission stays “default”, the browser prompt was dismissed — click again and accept.
           </div>
         </div>
       </div>
