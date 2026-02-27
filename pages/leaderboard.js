@@ -30,7 +30,7 @@ export default function Leaderboard() {
   const [user, setUser] = useState(null);
   const [teamId, setTeamId] = useState(null);
 
-  const [members, setMembers] = useState([]); // {user_id, display_name?, email?}
+  const [members, setMembers] = useState([]); // {user_id, display_name?}
   const [rows, setRows] = useState([]); // ranked
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
@@ -46,6 +46,7 @@ export default function Leaderboard() {
     (async () => {
       try {
         setLoading(true);
+
         const { data, error } = await supabase.auth.getUser();
         if (error) throw error;
         if (!data?.user) {
@@ -57,7 +58,7 @@ export default function Leaderboard() {
         // Pull team_id from user_settings
         const { data: st, error: stErr } = await supabase
           .from("user_settings")
-          .select("team_id, mode")
+          .select("team_id")
           .eq("user_id", data.user.id)
           .maybeSingle();
         if (stErr) throw stErr;
@@ -73,21 +74,19 @@ export default function Leaderboard() {
         }
 
         // 1) members list
-        // Prefer the helper view if it exists; fallback to direct tables if not.
         let mem = [];
         try {
           const { data: vm, error: vmErr } = await supabase
             .from("v_team_members_with_profiles")
             .select("user_id, display_name")
             .eq("team_id", tid);
-
           if (vmErr) throw vmErr;
+
           mem = (vm || []).map((m) => ({
             user_id: m.user_id,
             display_name: m.display_name || "",
           }));
         } catch {
-          // fallback: team_members -> user_profiles
           const { data: tm, error: tmErr } = await supabase
             .from("team_members")
             .select("user_id")
@@ -109,24 +108,54 @@ export default function Leaderboard() {
           }
         }
 
-        // If user isn't in the list (RLS edge) add them so UI still works
         if (!mem.find((m) => m.user_id === data.user.id)) {
           mem.push({ user_id: data.user.id, display_name: "" });
         }
 
         setMembers(mem);
 
-        // 2) pull weekly events for the team (RLS allows team members to read)
-        const { data: evs, error: evErr } = await supabase
-          .from("activity_events")
-          .select("user_id,event_type,points,event_date")
-          .eq("team_id", tid)
-          .gte("event_date", startStr)
-          .lte("event_date", endStr);
+        // 2) Events
+        // Prefer activity_events (team-scoped). Fallback to events (user-scoped) if needed.
+        let evs = [];
+        let gotEvents = false;
 
-        if (evErr) throw evErr;
+        {
+          const { data: ae, error: aeErr } = await supabase
+            .from("activity_events")
+            .select("user_id,event_type,points,event_date")
+            .eq("team_id", tid)
+            .gte("event_date", startStr)
+            .lte("event_date", endStr);
 
-        // 3) aggregate
+          if (!aeErr) {
+            evs = ae || [];
+            gotEvents = true;
+          }
+        }
+
+        if (!gotEvents) {
+          // fallback: events table (created_at window)
+          const { data: e2, error: e2Err } = await supabase
+            .from("events")
+            .select("user_id,event_type,points,created_at")
+            .in(
+              "user_id",
+              mem.map((m) => m.user_id)
+            )
+            .gte("created_at", weekStart.toISOString())
+            .lt("created_at", addDays(weekEnd, 1).toISOString()); // inclusive end day
+
+          if (e2Err) throw e2Err;
+
+          evs = (e2 || []).map((r) => ({
+            user_id: r.user_id,
+            event_type: r.event_type,
+            points: r.points,
+            event_date: r.created_at ? String(r.created_at).slice(0, 10) : null,
+          }));
+        }
+
+        // 3) aggregate (NO undo logic)
         const byUser = new Map();
         (evs || []).forEach((e) => {
           const uid = e.user_id;
@@ -139,27 +168,24 @@ export default function Leaderboard() {
               sleep: 0,
               water: 0,
               plan_time: 0,
-              undo: 0,
             });
           }
           const r = byUser.get(uid);
           const pts = Number(e.points || 0);
           r.points += pts;
 
-          // breakdown buckets (match your event_type names from dashboard)
+          // buckets
           if (e.event_type === "workout_done") r.done += pts;
           else if (e.event_type === "workout_cancel") r.cancel += pts;
           else if (e.event_type === "sleep_hit_target") r.sleep += pts;
           else if (e.event_type === "water_hit_target") r.water += pts;
           else if (e.event_type === "set_tomorrow_time") r.plan_time += pts;
-          else if (String(e.event_type || "").startsWith("undo_")) r.undo += pts;
         });
 
         // Ensure all members appear even with 0 points
         const merged = mem.map((m) => ({
           user_id: m.user_id,
           display_name: m.display_name || "",
-          email: m.user_id === data.user.id ? data.user.email : null, // optional
           ...(byUser.get(m.user_id) || {
             user_id: m.user_id,
             points: 0,
@@ -168,11 +194,9 @@ export default function Leaderboard() {
             sleep: 0,
             water: 0,
             plan_time: 0,
-            undo: 0,
           }),
         }));
 
-        // Sort: points desc, then name
         merged.sort((a, b) => {
           if (b.points !== a.points) return b.points - a.points;
           return (a.display_name || "").localeCompare(b.display_name || "");
@@ -196,20 +220,10 @@ export default function Leaderboard() {
   const meId = user?.id;
 
   return (
-    <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
+    <div style={{ padding: 18, maxWidth: 980, margin: "0 auto", fontFamily: "system-ui" }}>
       <TopNav active="pact" onLogout={logout} />
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-        <h2 style={{ margin: 0 }}>Leaderboard</h2>
-        <div style={{ display: "flex", gap: 8 }}>
-          <a
-            href="/team"
-            style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}
-          >
-            Back
-          </a>
-          <button onClick={logout}>Logout</button>
-        </div>
-      </div>
+
+      <h1 style={{ margin: "0 0 14px" }}>Leaderboard</h1>
 
       {err && (
         <div style={{ marginTop: 12, padding: 12, border: "1px solid #f2c", borderRadius: 12 }}>
@@ -222,16 +236,18 @@ export default function Leaderboard() {
       </div>
 
       {!teamId && !loading && (
-        <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+        <div style={{ marginTop: 14, padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12 }}>
           You’re not in a team yet. Create/join a team first.
           <div style={{ marginTop: 10 }}>
-            <a href="/team" style={{ textDecoration: "none" }}>Go to Team</a>
+            <a href="/team" style={{ textDecoration: "none" }}>
+              Go to Team
+            </a>
           </div>
         </div>
       )}
 
       {loading && (
-        <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+        <div style={{ marginTop: 14, padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12 }}>
           Loading…
         </div>
       )}
@@ -239,7 +255,7 @@ export default function Leaderboard() {
       {!loading && teamId && (
         <>
           {/* Ranked list */}
-          <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+          <div style={{ marginTop: 14, padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12 }}>
             <div style={{ fontSize: 14, opacity: 0.8 }}>This week ranking</div>
 
             <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
@@ -252,7 +268,7 @@ export default function Leaderboard() {
                     key={r.user_id}
                     style={{
                       padding: 12,
-                      border: "1px solid #eee",
+                      border: "1px solid rgba(0,0,0,.08)",
                       borderRadius: 12,
                       background: isMe ? "rgba(0,0,0,0.03)" : "transparent",
                     }}
@@ -264,14 +280,23 @@ export default function Leaderboard() {
                       <div style={{ fontWeight: 900, fontSize: 18 }}>{r.points} pts</div>
                     </div>
 
-                    {/* breakdown */}
+                    {/* breakdown (NO UNDO) */}
                     <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10, fontSize: 13, opacity: 0.85 }}>
-                      <span>DONE: <b>{r.done}</b></span>
-                      <span>PLAN: <b>{r.plan_time}</b></span>
-                      <span>WATER: <b>{r.water}</b></span>
-                      <span>SLEEP: <b>{r.sleep}</b></span>
-                      <span>CANCEL: <b>{r.cancel}</b></span>
-                      <span>UNDO: <b>{r.undo}</b></span>
+                      <span>
+                        DONE: <b>{r.done}</b>
+                      </span>
+                      <span>
+                        PLAN: <b>{r.plan_time}</b>
+                      </span>
+                      <span>
+                        WATER: <b>{r.water}</b>
+                      </span>
+                      <span>
+                        SLEEP: <b>{r.sleep}</b>
+                      </span>
+                      <span>
+                        CANCEL: <b>{r.cancel}</b>
+                      </span>
                     </div>
                   </div>
                 );
@@ -279,18 +304,25 @@ export default function Leaderboard() {
             </div>
           </div>
 
-          {/* Simple “status line” */}
-          <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+          {/* What counts (NO UNDO DONE) */}
+          <div style={{ marginTop: 14, padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12 }}>
             <div style={{ fontSize: 14, opacity: 0.8 }}>What counts</div>
             <div style={{ marginTop: 8, lineHeight: 1.5 }}>
-              • Workout done: <b>+10</b><br />
-              • Set tomorrow time (first time): <b>+3</b><br />
-              • Hit water target: <b>+3</b><br />
-              • Hit sleep target: <b>+3</b><br />
-              • Cancel: <b>-5</b><br />
-              • Undo done: <b>-10</b>
+              • Workout done: <b>+10</b>
+              <br />
+              • Set tomorrow time (first time): <b>+3</b>
+              <br />
+              • Hit water target: <b>+3</b>
+              <br />
+              • Hit sleep target: <b>+3</b>
+              <br />
+              • Cancel: <b>-5</b>
             </div>
           </div>
+
+          {/* NOTE: points not allocating is upstream.
+              This page only reads what’s in events/activity_events.
+              Next step is to ensure dashboard/profile write events consistently. */}
         </>
       )}
     </div>
