@@ -47,25 +47,32 @@ export default function Debug() {
         log("2) upsert user_profiles", true, JSON.stringify(payload));
       }
 
-      // 3) upsert settings
+      // 3) ensure settings row exists (DO NOT overwrite mode/team_id)
       {
-        const payload = {
-          user_id: userId,
-          mode: "solo",
-          tone_mode: "normal",
-          water_target_ml: 3000,
-          sleep_target_hours: 8,
-          reminder_times: ["08:00", "12:00", "18:00"],
-          included_activities: ["WALK", "RUN", "SPIN", "SWIM", "WEIGHTS"],
-          timezone: "Europe/London",
-        };
-
-        const { error } = await supabase
+        const { data: existing, error: selErr } = await supabase
           .from("user_settings")
-          .upsert(payload, { onConflict: "user_id" });
+          .select("user_id")
+          .eq("user_id", userId)
+          .maybeSingle();
+        if (selErr) throw selErr;
 
-        if (error) throw error;
-        log("3) upsert user_settings", true, "ok");
+        if (!existing) {
+          const payload = {
+            user_id: userId,
+            mode: "solo",
+            tone_mode: "normal",
+            water_target_ml: 3000,
+            sleep_target_hours: 8,
+            reminder_times: ["08:00", "12:00", "18:00"],
+            included_activities: ["WALK", "RUN", "SPIN", "SWIM", "WEIGHTS"],
+            timezone: "Europe/London",
+          };
+          const { error } = await supabase.from("user_settings").insert(payload);
+          if (error) throw error;
+          log("3) insert user_settings", true, "created");
+        } else {
+          log("3) user_settings exists", true, "skipped");
+        }
       }
 
       // 4) upsert plans (today) - MUST match real app plan types
