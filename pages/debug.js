@@ -1,298 +1,176 @@
 // pages/debug.js
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
-
-function addDays(d, n) {
-  const x = new Date(d);
-  x.setDate(x.getDate() + n);
-  return x;
-}
-
-function isoDate(d) {
-  return new Date(d).toISOString().slice(0, 10);
-}
-
-// If you have your own planTypeForDate, you can import it.
-// For debug we keep it simple.
-function planTypeForDate(d) {
-  // Example: Mon/Wed/Fri/Sat = TRAIN, Tue/Thu = LIGHT, Sun = REST
-  const day = d.getDay(); // 0 Sun
-  if (day === 0) return "REST";
-  if (day === 2 || day === 4) return "LIGHT";
-  return "TRAIN";
-}
-
-function Card({ title, children }) {
-  return (
-    <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
-      <div style={{ fontSize: 14, opacity: 0.8 }}>{title}</div>
-      <div style={{ marginTop: 10 }}>{children}</div>
-    </div>
-  );
-}
-
-function Step({ s }) {
-  const bg = s.status === "ok" ? "rgba(0,200,0,0.06)" : s.status === "fail" ? "rgba(200,0,0,0.06)" : "transparent";
-  return (
-    <div style={{ padding: 10, border: "1px solid #eee", borderRadius: 12, marginBottom: 10, background: bg }}>
-      <div style={{ fontWeight: 800 }}>
-        {s.status === "ok" ? "✅" : s.status === "fail" ? "❌" : "⏳"} {s.name}
-      </div>
-      {s.detail && <div style={{ marginTop: 6, fontSize: 13, opacity: 0.85 }}>{s.detail}</div>}
-    </div>
-  );
-}
+import { addDays, isoDate, planTypeForDate } from "../lib/weekTemplate";
 
 export default function Debug() {
-  const [user, setUser] = useState(null);
-  const [steps, setSteps] = useState([]);
-  const [basic, setBasic] = useState([]);
-  const [err, setErr] = useState("");
+  const [rows, setRows] = useState([]);
+  const [busy, setBusy] = useState(false);
 
-  const today = useMemo(() => new Date(), []);
-  const todayStr = isoDate(today);
-  const tomorrowStr = isoDate(addDays(today, 1));
+  function log(step, ok, msg = "", extra = null) {
+    setRows((r) => [
+      ...r,
+      {
+        ts: new Date().toISOString(),
+        step,
+        ok,
+        msg,
+        extra,
+      },
+    ]);
+  }
+
+  async function run() {
+    setRows([]);
+    setBusy(true);
+
+    try {
+      // 1) Auth
+      const { data: u, error: uErr } = await supabase.auth.getUser();
+      if (uErr) throw uErr;
+      if (!u?.user) throw new Error("No user session. Login first.");
+      const userId = u.user.id;
+      log("1) auth.getUser()", true, `user=${userId}`);
+
+      const today = new Date();
+      const todayStr = isoDate(today);
+      const tomorrow = addDays(today, 1);
+      const tomorrowStr = isoDate(tomorrow);
+
+      // 2) upsert profile
+      {
+        const payload = { user_id: userId, display_name: "" };
+        const { error } = await supabase
+          .from("user_profiles")
+          .upsert(payload, { onConflict: "user_id" });
+        if (error) throw error;
+        log("2) upsert user_profiles", true, JSON.stringify(payload));
+      }
+
+      // 3) upsert settings
+      {
+        const payload = {
+          user_id: userId,
+          mode: "solo",
+          tone_mode: "normal",
+          water_target_ml: 3000,
+          sleep_target_hours: 8,
+          reminder_times: ["08:00", "12:00", "18:00"],
+          included_activities: ["WALK", "RUN", "SPIN", "SWIM", "WEIGHTS"],
+          timezone: "Europe/London",
+        };
+
+        const { error } = await supabase
+          .from("user_settings")
+          .upsert(payload, { onConflict: "user_id" });
+
+        if (error) throw error;
+        log("3) upsert user_settings", true, "ok");
+      }
+
+      // 4) upsert plans (today) - MUST match real app plan types
+      {
+        const payload = {
+          user_id: userId,
+          plan_date: todayStr,
+          plan_type: planTypeForDate(today),
+          // NOTE: no status on purpose (same as dashboard ensurePlan)
+        };
+
+        const { error } = await supabase
+          .from("plans")
+          .upsert(payload, {
+            onConflict: "user_id,plan_date",
+            ignoreDuplicates: true,
+          });
+
+        if (error) throw error;
+        log("4) upsert plans (today)", true, JSON.stringify(payload));
+      }
+
+      // 5) upsert plans (tomorrow)
+      {
+        const payload = {
+          user_id: userId,
+          plan_date: tomorrowStr,
+          plan_type: planTypeForDate(tomorrow),
+        };
+
+        const { error } = await supabase
+          .from("plans")
+          .upsert(payload, {
+            onConflict: "user_id,plan_date",
+            ignoreDuplicates: true,
+          });
+
+        if (error) throw error;
+        log("5) upsert plans (tomorrow)", true, JSON.stringify(payload));
+      }
+
+      // 6) read back today plan
+      {
+        const { data, error } = await supabase
+          .from("plans")
+          .select("*")
+          .eq("user_id", userId)
+          .eq("plan_date", todayStr)
+          .maybeSingle();
+
+        if (error) throw error;
+        log("6) select plans (today)", true, JSON.stringify(data || null));
+      }
+
+      log("DONE", true, "All checks passed ✅");
+    } catch (e) {
+      // This is the exact error you need to paste back if it still fails.
+      log("FAILED", false, e?.message || String(e), e);
+      console.error("DEBUG FAILED:", e);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   useEffect(() => {
-    runBasicChecks();
+    // auto-run on load
+    run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function pushStep(name, status = "pending", detail = "") {
-    setSteps((prev) => [...prev, { name, status, detail }]);
-  }
-  function updateLast(status, detail = "") {
-    setSteps((prev) => {
-      const next = [...prev];
-      const i = next.length - 1;
-      if (i >= 0) next[i] = { ...next[i], status, detail };
-      return next;
-    });
-  }
-
-  async function runBasicChecks() {
-    setErr("");
-    setBasic([]);
-
-    const out = [];
-    const add = (name, ok, detail) => out.push({ name, ok, detail });
-
-    try {
-      const { data, error } = await supabase.auth.getUser();
-      if (error) throw error;
-      if (!data?.user) {
-        add("auth.getUser", false, "No user session");
-        setBasic(out);
-        return;
-      }
-      setUser(data.user);
-      add("auth.getUser", true, data.user.email);
-    } catch (e) {
-      add("auth.getUser", false, e.message);
-      setBasic(out);
-      return;
-    }
-
-    async function sel(table, col = "id") {
-      const { error } = await supabase.from(table).select(col).limit(1);
-      if (error) throw error;
-    }
-
-    const tables = [
-      ["user_profiles", "user_id"],
-      ["user_settings", "user_id"],
-      ["plans", "id"],
-      ["water_logs", "user_id"],
-      ["supplements", "id"],
-      ["supplement_logs", "supplement_id"],
-      ["sleep_logs", "user_id"],
-      ["workout_logs", "plan_id"],
-      ["push_devices", "user_id"],
-      ["activity_events", "id"],
-      ["teams", "id"],
-      ["team_members", "user_id"],
-      ["team_invites", "id"],
-    ];
-
-    for (const [t, c] of tables) {
-      try {
-        await sel(t, c);
-        add(t, true, "select OK");
-      } catch (e) {
-        add(t, false, e.message);
-      }
-    }
-
-    setBasic(out);
-  }
-
-  async function runDashboardFlow() {
-    setErr("");
-    setSteps([]);
-
-    try {
-      pushStep("1) auth.getUser");
-      const { data, error } = await supabase.auth.getUser();
-      if (error) throw error;
-      if (!data?.user) throw new Error("No user session");
-      setUser(data.user);
-      updateLast("ok", data.user.email);
-
-      const userId = data.user.id;
-
-      // --- bootstrapDefaults (writes!) ---
-      pushStep("2) upsert user_profiles");
-      {
-        const { error: e } = await supabase
-          .from("user_profiles")
-          .upsert({ user_id: userId, display_name: "" }, { onConflict: "user_id" });
-        if (e) throw e;
-      }
-      updateLast("ok");
-
-      pushStep("3) upsert water_logs (today)");
-      {
-        const { error: e } = await supabase
-          .from("water_logs")
-          .upsert({ user_id: userId, log_date: todayStr, ml_total: 0 }, { onConflict: "user_id,log_date" });
-        if (e) throw e;
-      }
-      updateLast("ok");
-
-      pushStep("4) upsert plans (today)");
-      {
-        const { error: e } = await supabase.from("plans").upsert(
-          {
-            user_id: userId,
-            plan_date: todayStr,
-            plan_type: planTypeForDate(today),
-            status: "PLANNED",
-          },
-          { onConflict: "user_id,plan_date" }
-        );
-        if (e) throw e;
-      }
-      updateLast("ok");
-
-      pushStep("5) upsert plans (tomorrow)");
-      {
-        const d = addDays(today, 1);
-        const { error: e } = await supabase.from("plans").upsert(
-          {
-            user_id: userId,
-            plan_date: tomorrowStr,
-            plan_type: planTypeForDate(d),
-            status: "PLANNED",
-          },
-          { onConflict: "user_id,plan_date" }
-        );
-        if (e) throw e;
-      }
-      updateLast("ok");
-
-      // --- refreshAll reads that should now return rows ---
-      pushStep("6) fetch today plan (should not be null)");
-      const { data: tp, error: tpErr } = await supabase
-        .from("plans")
-        .select("*")
-        .eq("user_id", userId)
-        .eq("plan_date", todayStr)
-        .maybeSingle();
-      if (tpErr) throw tpErr;
-      if (!tp) throw new Error(`todayPlan is null after upsert (check RLS / onConflict / constraints). date=${todayStr}`);
-      updateLast("ok", `id=${tp.id}`);
-
-      pushStep("7) fetch tomorrow plan (should not be null)");
-      const { data: tomp, error: tomErr } = await supabase
-        .from("plans")
-        .select("*")
-        .eq("user_id", userId)
-        .eq("plan_date", tomorrowStr)
-        .maybeSingle();
-      if (tomErr) throw tomErr;
-      if (!tomp) throw new Error(`tomorrowPlan is null after upsert (check RLS / onConflict / constraints). date=${tomorrowStr}`);
-      updateLast("ok", `id=${tomp.id}`);
-
-      pushStep("8) fetch water row (today)");
-      const { data: w, error: wErr } = await supabase
-        .from("water_logs")
-        .select("*")
-        .eq("user_id", userId)
-        .eq("log_date", todayStr)
-        .maybeSingle();
-      if (wErr) throw wErr;
-      updateLast("ok", w ? `ml_total=${w.ml_total}` : "row missing (unexpected)");
-
-      pushStep("9) fetch supplements (active)");
-      const { data: s, error: sErr } = await supabase
-        .from("supplements")
-        .select("*")
-        .eq("user_id", userId)
-        .eq("active", true)
-        .limit(5);
-      if (sErr) throw sErr;
-      updateLast("ok", `count=${(s || []).length}`);
-
-      pushStep("✅ Dashboard flow finished");
-      updateLast("ok", "If dashboard still shows Loading, the issue is inside dashboard.js UI logic (not DB).");
-    } catch (e) {
-      const msg = e?.message || String(e);
-      updateLast("fail", msg);
-      setErr(msg);
-    }
-  }
-
   return (
-    <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
-      <h2>Debug</h2>
-      <div style={{ opacity: 0.75 }}>{user ? `User: ${user.email}` : "No user loaded yet"}</div>
+    <div style={{ padding: 20, fontFamily: "system-ui", maxWidth: 900, margin: "0 auto" }}>
+      <h2 style={{ marginTop: 0 }}>PACT Debug</h2>
 
-      {err && (
-        <div style={{ marginTop: 12, padding: 12, border: "1px solid #f2c", borderRadius: 12 }}>
-          <b>Error:</b> {err}
-        </div>
-      )}
+      <button onClick={run} disabled={busy} style={{ padding: "10px 14px", fontWeight: 800 }}>
+        {busy ? "Running…" : "Run Debug"}
+      </button>
 
-      <Card title="Basic schema checks (select only)">
-        {basic.length === 0 ? (
-          <div>Running…</div>
-        ) : (
-          basic.map((r) => (
-            <div
-              key={r.name}
-              style={{
-                padding: 10,
-                border: "1px solid #eee",
-                borderRadius: 12,
-                marginBottom: 10,
-                background: r.ok ? "rgba(0,200,0,0.06)" : "rgba(200,0,0,0.06)",
-              }}
-            >
-              <div style={{ fontWeight: 800 }}>{r.ok ? "✅" : "❌"} {r.name}</div>
-              {r.detail && <div style={{ marginTop: 6, fontSize: 13, opacity: 0.85 }}>{r.detail}</div>}
+      <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
+        {rows.map((r, i) => (
+          <div
+            key={i}
+            style={{
+              padding: 12,
+              border: "1px solid #ddd",
+              borderRadius: 12,
+              background: r.ok ? "#f6ffed" : "#fff1f0",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+              <div style={{ fontWeight: 900 }}>
+                {r.ok ? "✅" : "❌"} {r.step}
+              </div>
+              <div style={{ opacity: 0.7, fontSize: 12 }}>{r.ts}</div>
             </div>
-          ))
-        )}
 
-        <button style={{ width: "100%", padding: 12 }} onClick={runBasicChecks}>
-          Re-run basic checks
-        </button>
-      </Card>
+            {r.msg ? <div style={{ marginTop: 6 }}>{r.msg}</div> : null}
 
-      <Card title="Dashboard flow check (includes writes)">
-        <button style={{ width: "100%", padding: 12 }} onClick={runDashboardFlow}>
-          Run dashboard flow
-        </button>
-
-        <div style={{ marginTop: 12 }}>
-          {steps.map((s, i) => (
-            <Step key={i} s={s} />
-          ))}
-        </div>
-      </Card>
-
-      <div style={{ marginTop: 16 }}>
-        <a href="/dashboard">Back to Dashboard</a>
+            {r.extra ? (
+              <pre style={{ marginTop: 10, whiteSpace: "pre-wrap", fontSize: 12, opacity: 0.85 }}>
+                {typeof r.extra === "string" ? r.extra : JSON.stringify(r.extra, null, 2)}
+              </pre>
+            ) : null}
+          </div>
+        ))}
       </div>
     </div>
   );
