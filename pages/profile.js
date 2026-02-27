@@ -5,9 +5,8 @@ import { addDays, isoDate } from "../lib/weekTemplate";
 import { promptForPush, initOneSignal } from "../lib/onesignal";
 
 function mondayStart(d) {
-  // Week starts Monday
   const x = new Date(d);
-  const day = x.getDay(); // 0=Sun
+  const day = x.getDay();
   const diff = day === 0 ? -6 : 1 - day;
   x.setDate(x.getDate() + diff);
   x.setHours(0, 0, 0, 0);
@@ -29,6 +28,7 @@ export default function Profile() {
   const [achievements, setAchievements] = useState([]);
 
   const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(true);
 
   const today = useMemo(() => new Date(), []);
   const weekStart = useMemo(() => mondayStart(today), [today]);
@@ -36,6 +36,7 @@ export default function Profile() {
 
   useEffect(() => {
     (async () => {
+      setLoading(true);
       try {
         const { data, error } = await supabase.auth.getUser();
         if (error) throw error;
@@ -45,33 +46,47 @@ export default function Profile() {
         }
         setUser(data.user);
 
-        // safe: ensure rows exist
-        await supabase.from("user_profiles").upsert(
-          { user_id: data.user.id, display_name: "" },
-          { onConflict: "user_id" }
-        );
+        // Ensure profile row exists
+        {
+          const { error: upErr } = await supabase.from("user_profiles").upsert(
+            { user_id: data.user.id, display_name: "" },
+            { onConflict: "user_id" }
+          );
+          if (upErr) throw upErr;
+        }
 
-        await supabase.from("user_settings").upsert(
-          {
-            user_id: data.user.id,
-            mode: "solo",
-            tone_mode: "normal",
-            water_target_ml: 3000,
-            sleep_target_hours: 8,
-            reminder_times: ["08:00", "12:00", "18:00"],
-            included_activities: ["WALK", "RUN", "SPIN", "SWIM", "WEIGHTS"],
-            timezone: "Europe/London",
-          },
-          { onConflict: "user_id" }
-        );
+        // Ensure settings row exists
+        {
+          const { error: stErr } = await supabase.from("user_settings").upsert(
+            {
+              user_id: data.user.id,
+              mode: "solo",
+              tone_mode: "normal",
+              water_target_ml: 3000,
+              sleep_target_hours: 8,
+              reminder_times: ["08:00", "12:00", "18:00"],
+              included_activities: ["WALK", "RUN", "SPIN", "SWIM", "WEIGHTS"],
+              timezone: "Europe/London",
+            },
+            { onConflict: "user_id" }
+          );
+          if (stErr) throw stErr;
+        }
 
-        // push (no prompt)
-        const id = await initOneSignal();
-        if (id) setPushId(id);
+        // Push (no prompt) — IMPORTANT: don’t let this break the page
+        try {
+          const id = await initOneSignal();
+          if (id) setPushId(id);
+        } catch (e) {
+          // silently ignore, just like dashboard does
+          console.warn("initOneSignal failed:", e);
+        }
 
         await refreshAll(data.user.id);
       } catch (e) {
         setErr(e?.message || String(e));
+      } finally {
+        setLoading(false);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -183,7 +198,7 @@ export default function Profile() {
     );
   }
 
-  if (!user || !settings) {
+  if (loading || !user || !settings) {
     return <div style={{ padding: 18, fontFamily: "system-ui" }}>Loading…</div>;
   }
 
@@ -196,7 +211,6 @@ export default function Profile() {
         </a>
       </div>
 
-      {/* Identity */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Username</div>
         <input
@@ -209,7 +223,6 @@ export default function Profile() {
         <div style={{ marginTop: 6, fontWeight: 700 }}>{user.email}</div>
       </div>
 
-      {/* Push */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Push notifications</div>
         <div style={{ marginTop: 6, fontWeight: 700 }}>
@@ -222,7 +235,6 @@ export default function Profile() {
         )}
       </div>
 
-      {/* Weekly points */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>
           This week ({fmtDate(weekStart)} → {fmtDate(weekEnd)})
@@ -243,34 +255,22 @@ export default function Profile() {
         )}
       </div>
 
-      {/* Achievements */}
-      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
-        <div style={{ fontSize: 14, opacity: 0.8 }}>Achievements</div>
-        {achievements.length ? (
-          <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-            {achievements.map((x, idx) => (
-              <div key={idx} style={{ padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
-                {x}
-              </div>
+      {achievements.length > 0 && (
+        <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+          <div style={{ fontSize: 14, opacity: 0.8 }}>Achievements</div>
+          <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+            {achievements.map((a) => (
+              <div key={a} style={{ fontWeight: 800 }}>{a}</div>
             ))}
           </div>
-        ) : (
-          <div style={{ marginTop: 10, opacity: 0.7 }}>No badges yet — get one workout done and it starts.</div>
-        )}
-      </div>
+        </div>
+      )}
 
-      <div style={{ marginTop: 14, display: "flex", gap: 10 }}>
-        <a href="/settings" style={{ flex: 1, padding: 12, border: "1px solid #ddd", borderRadius: 12, textAlign: "center", textDecoration: "none" }}>
-          Settings
-        </a>
-        <a href="/team" style={{ flex: 1, padding: 12, border: "1px solid #ddd", borderRadius: 12, textAlign: "center", textDecoration: "none" }}>
-          Team
-        </a>
+      <div style={{ marginTop: 14 }}>
+        <button style={{ width: "100%", padding: 12 }} onClick={logout}>
+          Logout
+        </button>
       </div>
-
-      <button style={{ width: "100%", padding: 12, marginTop: 14 }} onClick={logout}>
-        Logout
-      </button>
     </div>
   );
 }
