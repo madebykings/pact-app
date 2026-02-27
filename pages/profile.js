@@ -241,16 +241,19 @@ if (!existingProfile) {
 
   // ✅ FIX: remove updated_at write (your table doesn’t have it, so schema cache errors)
   async function saveDisplayName(name) {
-    if (!user) return;
+  if (!user) return;
+  const clean = (name || "").trim();
 
-    const clean = (name || "").trimStart(); // allow empty but prevent leading spaces madness
-    const { error } = await supabase.from("user_profiles").update({ display_name: clean }).eq("user_id", user.id);
-    if (error) {
-      alert(error.message);
-      return;
-    }
-    await refresh(user.id);
+  const { error } = await supabase
+    .from("user_profiles")
+    .upsert({ user_id: user.id, display_name: clean }, { onConflict: "user_id" });
+
+  if (error) {
+    alert(error.message);
+    return;
   }
+  await refresh(user.id);
+}
 
   function onNameChange(next) {
     setNameDraft(next);
