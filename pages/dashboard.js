@@ -6,17 +6,27 @@ import { initOneSignal } from "../lib/onesignal";
 
 export default function Dashboard() {
   const [user, setUser] = useState(null);
+
   const [todayPlan, setTodayPlan] = useState(null);
   const [tomorrowPlan, setTomorrowPlan] = useState(null);
   const [weekPlans, setWeekPlans] = useState([]);
+
+  const [settings, setSettings] = useState(null);
+
   const [water, setWater] = useState(null);
+
   const [supps, setSupps] = useState([]);
   const [takenMap, setTakenMap] = useState({});
+
+  const [sleep, setSleep] = useState(null);
+
   const [weighIn, setWeighIn] = useState(null);
+
   const [errMsg, setErrMsg] = useState("");
 
   const today = useMemo(() => new Date(), []);
   const tomorrow = useMemo(() => addDays(today, 1), [today]);
+
   const todayStr = isoDate(today);
   const tomorrowStr = isoDate(tomorrow);
 
@@ -25,10 +35,12 @@ export default function Dashboard() {
       try {
         const { data, error } = await supabase.auth.getUser();
         if (error) throw error;
+
         if (!data?.user) {
           window.location.href = "/";
           return;
         }
+
         setUser(data.user);
 
         // Don't block UI if push SDK is slow
@@ -48,7 +60,9 @@ export default function Dashboard() {
       const withTimeout = (p, ms = 7000) =>
         Promise.race([
           p,
-          new Promise((_, rej) => setTimeout(() => rej(new Error("Push init timeout")), ms)),
+          new Promise((_, rej) =>
+            setTimeout(() => rej(new Error("Push init timeout")), ms)
+          ),
         ]);
 
       const playerId = await withTimeout(initOneSignal(), 7000);
@@ -69,6 +83,22 @@ export default function Dashboard() {
       const { error } = await supabase
         .from("user_profiles")
         .upsert({ user_id: userId, display_name: "" }, { onConflict: "user_id" });
+      if (error) throw error;
+    }
+
+    // settings (NEW)
+    {
+      const { error } = await supabase.from("user_settings").upsert(
+        {
+          user_id: userId,
+          mode: "solo",
+          water_target_ml: 3000,
+          reminder_times: ["08:00", "12:00", "18:00"],
+          brutal_copy: {},
+          timezone: "Europe/London",
+        },
+        { onConflict: "user_id" }
+      );
       if (error) throw error;
     }
 
@@ -97,18 +127,55 @@ export default function Dashboard() {
       const defaults = [
         { name: "Creatine", rule_type: "PRE_WORKOUT", offset_minutes: -45 },
         { name: "L-Carnitine", rule_type: "PRE_WORKOUT", offset_minutes: -30 },
-        { name: "Cod Liver Oil", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
-        { name: "Tongkat Ali", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
-        { name: "Shilajit", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
-        { name: "Collagen", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
-        { name: "B12 Coffee", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
-        { name: "Ashwagandha", rule_type: "EVENING_WINDOW", window_start: "17:00", window_end: "21:00" },
-        { name: "ZMA", rule_type: "BED_WINDOW", window_start: "21:00", window_end: "23:59" },
+        {
+          name: "Cod Liver Oil",
+          rule_type: "MORNING_WINDOW",
+          window_start: "06:00",
+          window_end: "10:00",
+        },
+        {
+          name: "Tongkat Ali",
+          rule_type: "MORNING_WINDOW",
+          window_start: "06:00",
+          window_end: "10:00",
+        },
+        {
+          name: "Shilajit",
+          rule_type: "MORNING_WINDOW",
+          window_start: "06:00",
+          window_end: "10:00",
+        },
+        {
+          name: "Collagen",
+          rule_type: "MORNING_WINDOW",
+          window_start: "06:00",
+          window_end: "10:00",
+        },
+        {
+          name: "B12 Coffee",
+          rule_type: "MORNING_WINDOW",
+          window_start: "06:00",
+          window_end: "10:00",
+        },
+        {
+          name: "Ashwagandha",
+          rule_type: "EVENING_WINDOW",
+          window_start: "17:00",
+          window_end: "21:00",
+        },
+        {
+          name: "ZMA",
+          rule_type: "BED_WINDOW",
+          window_start: "21:00",
+          window_end: "23:59",
+        },
       ].map((s) => ({ ...s, user_id: userId, active: true }));
 
       const { error } = await supabase.from("supplements").insert(defaults);
       if (error) throw error;
     }
+
+    // sleep_logs row is created lazily on edit, so no bootstrap needed
   }
 
   async function ensurePlan(userId, d) {
@@ -141,6 +208,17 @@ export default function Dashboard() {
 
     setTodayPlan(tp);
     setTomorrowPlan(tomp);
+
+    // settings
+    {
+      const { data: st, error: stErr } = await supabase
+        .from("user_settings")
+        .select("*")
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (stErr) throw stErr;
+      setSettings(st || null);
+    }
 
     const end = isoDate(addDays(today, 6));
     const { data: wp, error: wpErr } = await supabase
@@ -187,6 +265,19 @@ export default function Dashboard() {
       setTakenMap({});
     }
 
+    // sleep (NEW)
+    {
+      const { data: sl, error: slErr } = await supabase
+        .from("sleep_logs")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("log_date", todayStr)
+        .maybeSingle();
+      if (slErr) throw slErr;
+      setSleep(sl || null);
+    }
+
+    // weigh-in on Sunday
     if (new Date().getDay() === 0) {
       const { data: w, error: wiErr } = await supabase
         .from("weigh_ins")
@@ -209,9 +300,12 @@ export default function Dashboard() {
       const sign = off < 0 ? "" : "+";
       return `${sign}${off}m vs workout (${pt})`;
     }
-    if (s.rule_type === "MORNING_WINDOW") return `${s.window_start || "06:00"}–${s.window_end || "10:00"}`;
-    if (s.rule_type === "EVENING_WINDOW") return `${s.window_start || "17:00"}–${s.window_end || "21:00"}`;
-    if (s.rule_type === "BED_WINDOW") return `before bed (${s.window_start || "21:00"}–${s.window_end || "23:59"})`;
+    if (s.rule_type === "MORNING_WINDOW")
+      return `${s.window_start || "06:00"}–${s.window_end || "10:00"}`;
+    if (s.rule_type === "EVENING_WINDOW")
+      return `${s.window_start || "17:00"}–${s.window_end || "21:00"}`;
+    if (s.rule_type === "BED_WINDOW")
+      return `before bed (${s.window_start || "21:00"}–${s.window_end || "23:59"})`;
     return "anytime";
   }
 
@@ -248,10 +342,16 @@ export default function Dashboard() {
 
   async function cancel(plan) {
     if (!user || !plan) return;
-    const reason = prompt("Reason (illness/work/family/couldn't be bothered)?") || "unspecified";
+    const reason =
+      prompt("Reason (illness/work/family/couldn't be bothered)?") ||
+      "unspecified";
     const { error } = await supabase
       .from("plans")
-      .update({ status: "CANCELLED", cancel_reason: reason, updated_at: new Date().toISOString() })
+      .update({
+        status: "CANCELLED",
+        cancel_reason: reason,
+        updated_at: new Date().toISOString(),
+      })
       .eq("id", plan.id);
     if (error) alert(error.message);
     await refreshAll(user.id);
@@ -262,9 +362,13 @@ export default function Dashboard() {
     const current = water?.ml_total || 0;
     const next = current + ml;
 
-    // UPSERT by (user_id,log_date) so it can't "not save"
     const { error } = await supabase.from("water_logs").upsert(
-      { user_id: user.id, log_date: todayStr, ml_total: next, updated_at: new Date().toISOString() },
+      {
+        user_id: user.id,
+        log_date: todayStr,
+        ml_total: next,
+        updated_at: new Date().toISOString(),
+      },
       { onConflict: "user_id,log_date" }
     );
     if (error) alert(error.message);
@@ -291,6 +395,16 @@ export default function Dashboard() {
     await refreshAll(user.id);
   }
 
+  async function upsertSleep(patch) {
+    if (!user) return;
+    const { error } = await supabase.from("sleep_logs").upsert(
+      { user_id: user.id, log_date: todayStr, ...patch },
+      { onConflict: "user_id,log_date" }
+    );
+    if (error) alert(error.message);
+    await refreshAll(user.id);
+  }
+
   async function submitWeighIn() {
     if (!user) return;
     const w = prompt("Weight (kg)?");
@@ -300,7 +414,10 @@ export default function Dashboard() {
 
     const { error } = await supabase
       .from("weigh_ins")
-      .upsert({ user_id: user.id, weigh_date: todayStr, weight_kg: val }, { onConflict: "user_id,weigh_date" });
+      .upsert(
+        { user_id: user.id, weigh_date: todayStr, weight_kg: val },
+        { onConflict: "user_id,weigh_date" }
+      );
 
     if (error) alert(error.message);
     await refreshAll(user.id);
@@ -315,7 +432,9 @@ export default function Dashboard() {
     return (
       <div style={{ padding: 20, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
         <h2>Pact</h2>
-        <p><b>Error:</b> {errMsg}</p>
+        <p>
+          <b>Error:</b> {errMsg}
+        </p>
         <button onClick={logout}>Logout</button>
       </div>
     );
@@ -328,12 +447,22 @@ export default function Dashboard() {
   const isTrainingToday = todayPlan.plan_type !== "REST";
   const isTrainingTomorrow = tomorrowPlan.plan_type !== "REST";
 
+  const waterTargetMl = settings?.water_target_ml || 3000;
+
   return (
     <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h2 style={{ margin: 0 }}>Pact</h2>
         <div style={{ display: "flex", gap: 8 }}>
-          <a href="/settings" style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}>
+          <a
+            href="/settings"
+            style={{
+              padding: "6px 10px",
+              border: "1px solid #ddd",
+              borderRadius: 10,
+              textDecoration: "none",
+            }}
+          >
             Settings
           </a>
           <button onClick={logout}>Logout</button>
@@ -370,7 +499,8 @@ export default function Dashboard() {
 
         {todayPlan.status !== "PLANNED" && (
           <div style={{ marginTop: 10, fontWeight: 700 }}>
-            Status: {todayPlan.status}{todayPlan.cancel_reason ? ` (${todayPlan.cancel_reason})` : ""}
+            Status: {todayPlan.status}
+            {todayPlan.cancel_reason ? ` (${todayPlan.cancel_reason})` : ""}
           </div>
         )}
       </div>
@@ -411,11 +541,17 @@ export default function Dashboard() {
 
       {/* WATER */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
-        <div style={{ fontSize: 14, opacity: 0.8 }}>Water (target 3L)</div>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>
+          Water (target {(waterTargetMl / 1000).toFixed(1)}L)
+        </div>
         <div style={{ fontSize: 22, fontWeight: 800 }}>{water?.ml_total || 0} ml</div>
         <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-          <button style={{ flex: 1, padding: 12, fontSize: 16 }} onClick={() => addWater(250)}>+250</button>
-          <button style={{ flex: 1, padding: 12, fontSize: 16 }} onClick={() => addWater(500)}>+500</button>
+          <button style={{ flex: 1, padding: 12, fontSize: 16 }} onClick={() => addWater(250)}>
+            +250
+          </button>
+          <button style={{ flex: 1, padding: 12, fontSize: 16 }} onClick={() => addWater(500)}>
+            +500
+          </button>
         </div>
       </div>
 
@@ -433,12 +569,37 @@ export default function Dashboard() {
                 <div style={{ fontWeight: 800 }}>
                   {takenMap[s.id] ? "✅" : "⬜"} {s.name}
                 </div>
-                <div style={{ opacity: 0.7, fontSize: 13 }}>
-                  {suppWhenLabel(s, todayPlan?.planned_time)}
-                </div>
+                <div style={{ opacity: 0.7, fontSize: 13 }}>{suppWhenLabel(s, todayPlan?.planned_time)}</div>
               </div>
             </button>
           ))}
+        </div>
+      </div>
+
+      {/* SLEEP (UNDER SUPPS) */}
+      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Sleep</div>
+
+        <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+          <label style={{ display: "grid", gap: 6 }}>
+            <div style={{ fontSize: 13, opacity: 0.7 }}>Bed time</div>
+            <input
+              type="time"
+              value={sleep?.bed_time || ""}
+              onChange={(e) => upsertSleep({ bed_time: e.target.value })}
+              style={{ width: "100%", padding: 12, fontSize: 16 }}
+            />
+          </label>
+
+          <label style={{ display: "grid", gap: 6 }}>
+            <div style={{ fontSize: 13, opacity: 0.7 }}>Wake time</div>
+            <input
+              type="time"
+              value={sleep?.wake_time || ""}
+              onChange={(e) => upsertSleep({ wake_time: e.target.value })}
+              style={{ width: "100%", padding: 12, fontSize: 16 }}
+            />
+          </label>
         </div>
       </div>
 
@@ -455,12 +616,19 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* NEXT FEATURES LINKS */}
-      <div style={{ marginTop: 14, display: "flex", gap: 10 }}>
-        <a href="/sleep" style={{ flex: 1, padding: 12, border: "1px solid #ddd", borderRadius: 12, textAlign: "center", textDecoration: "none" }}>
-          Sleep
-        </a>
-        <a href="/team" style={{ flex: 1, padding: 12, border: "1px solid #ddd", borderRadius: 12, textAlign: "center", textDecoration: "none" }}>
+      {/* TEAM LINK ONLY */}
+      <div style={{ marginTop: 14 }}>
+        <a
+          href="/team"
+          style={{
+            display: "block",
+            padding: 12,
+            border: "1px solid #ddd",
+            borderRadius: 12,
+            textAlign: "center",
+            textDecoration: "none",
+          }}
+        >
           Team / Solo
         </a>
       </div>
