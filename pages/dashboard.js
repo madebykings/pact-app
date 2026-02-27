@@ -1,5 +1,6 @@
 // pages/dashboard.js
 import { useEffect, useMemo, useState } from "react";
+import TopNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
 import { addDays, isoDate, planTypeForDate } from "../lib/weekTemplate";
 
@@ -50,30 +51,11 @@ export default function Dashboard() {
   const [weighIn, setWeighIn] = useState(null);
 
   const [errMsg, setErrMsg] = useState("");
-  const [actionMsg, setActionMsg] = useState("");
 
   const today = useMemo(() => new Date(), []);
   const tomorrow = useMemo(() => addDays(today, 1), [today]);
   const todayStr = isoDate(today);
-  
-function mondayStart(d) {
-  const x = new Date(d);
-  const day = x.getDay(); // 0=Sun
-  const diff = day === 0 ? -6 : 1 - day;
-  x.setDate(x.getDate() + diff);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-
-function sundayEnd(d) {
-  const m = mondayStart(d);
-  const s = new Date(m);
-  s.setDate(s.getDate() + 6);
-  s.setHours(0, 0, 0, 0);
-  return s;
-}
-
-const tomorrowStr = isoDate(tomorrow);
+  const tomorrowStr = isoDate(tomorrow);
 
   useEffect(() => {
     (async () => {
@@ -228,7 +210,7 @@ const tomorrowStr = isoDate(tomorrow);
     setTomorrowPlan(tomp);
 
     // plans (7 days)
-    const end = isoDate(addDays(today, 6));
+    const end = isoDate(addDays(today, (7 - today.getDay()) % 7));
     {
       const { data: wp, error: wpErr } = await supabase
         .from("plans")
@@ -325,35 +307,25 @@ const tomorrowStr = isoDate(tomorrow);
   // Points event logger (idempotent via unique indexes)
   // -----------------
   async function logEvent({ event_type, points, plan_id = null, meta = {} }) {
-  if (!user) return;
-  const team_id = settings?.team_id || null;
+    if (!user) return;
+    const team_id = settings?.team_id || null;
 
-  const payload = {
-    user_id: user.id,
-    team_id,
-    plan_id,
-    event_type,
-    points,
-    meta,
-    // event_date default at DB
-  };
+    const payload = {
+      user_id: user.id,
+      team_id,
+      plan_id,
+      event_type,
+      points,
+      meta,
+      // event_date default at DB
+    };
 
-  // Prefer upsert if you have the unique indexes; fall back to insert if not.
-  const conflict = plan_id
-    ? "user_id,plan_id,event_type,event_date"
-    : "user_id,event_type,event_date";
+    const conflict = plan_id
+      ? "user_id,plan_id,event_type,event_date"
+      : "user_id,event_type,event_date";
 
-  let res = await supabase.from("activity_events").upsert(payload, { onConflict: conflict });
-  if (res?.error) {
-    // common: no unique index for upsert -> fall back to insert
-    const ins = await supabase.from("activity_events").insert(payload);
-    if (ins?.error && ins.error.code !== "23505") {
-      // 23505 = duplicate (fine)
-      setActionMsg(ins.error.message);
-    }
+    await supabase.from("activity_events").upsert(payload, { onConflict: conflict });
   }
-}
-
 
   function suppWhenLabel(s, planTime) {
     const pt = planTime || "??:??";
@@ -486,7 +458,7 @@ const tomorrowStr = isoDate(tomorrow);
       wErr = error;
     }
 
-    if (wErr) { setActionMsg(wErr.message); alert(wErr.message); }
+    if (wErr) alert(wErr.message);
 
     const target = settings?.water_target_ml || 3000;
     if (current < target && next >= target) {
@@ -547,6 +519,7 @@ const tomorrowStr = isoDate(tomorrow);
   if (errMsg) {
     return (
       <div style={{ padding: 20, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
+      <TopNav active="dashboard" onLogout={logout} />
         <h2>Pact</h2>
         <p><b>Error:</b> {errMsg}</p>
         <button onClick={logout}>Logout</button>
@@ -576,13 +549,30 @@ const tomorrowStr = isoDate(tomorrow);
 
   return (
     <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
-      <TopNav active="dashboard" onLogout={logout} />
-
-      {actionMsg && (
-        <div style={{ marginTop: 12, padding: 12, border: "1px solid #f2c", borderRadius: 12 }}>
-          <b>Note:</b> {actionMsg}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+        <h2 style={{ margin: 0 }}>Pact</h2>
+        <div style={{ display: "flex", gap: 8 }}>
+          <a
+            href="/team"
+            style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}
+          >
+            Pact
+          </a>
+          <a
+            href="/profile"
+            style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}
+          >
+            Profile
+          </a>
+          <a
+            href="/settings"
+            style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}
+          >
+            Settings
+          </a>
+          <button onClick={logout}>Logout</button>
         </div>
-      )}
+      </div>
 
       {/* TODAY */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
@@ -769,20 +759,8 @@ const tomorrowStr = isoDate(tomorrow);
         </div>
       </div>
 
-      {/* WEIGH-IN */}
-<div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12, opacity: new Date().getDay() === 0 ? 1 : 0.6 }}>
-  <div style={{ fontSize: 14, opacity: 0.8 }}>Sunday weigh-in (hard cutoff 23:59)</div>
-  <div style={{ fontSize: 22, fontWeight: 800 }}>
-    {new Date().getDay() === 0 ? (weighIn ? `${weighIn.weight_kg} kg logged` : "Not logged") : "Available on Sunday"}
-  </div>
-  <button
-    style={{ width: "100%", padding: 12, marginTop: 10, fontSize: 16 }}
-    onClick={submitWeighIn}
-    disabled={new Date().getDay() !== 0 || !!weighIn}
-  >
-    LOG WEIGHT
-  </button>
-</div>
+      {/* SUNDAY WEIGH-IN */}
+      {new Date().getDay() === 0 && (
         <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
           <div style={{ fontSize: 14, opacity: 0.8 }}>Sunday weigh-in (hard cutoff 23:59)</div>
           <div style={{ fontSize: 22, fontWeight: 800, marginTop: 6 }}>
