@@ -47,6 +47,7 @@ export default function Profile() {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
   const [nameInput, setNameInput] = useState("");
+  const [saveStatus, setSaveStatus] = useState("");
   const [weekPoints, setWeekPoints] = useState(0);
   const [weekDoneCount, setWeekDoneCount] = useState(0);
 
@@ -87,6 +88,25 @@ export default function Profile() {
     })();
   }, []);
 
+  // Realtime refresh for points (optional, harmless if Realtime disabled)
+  useEffect(() => {
+    if (!user) return;
+    const ch = supabase
+      .channel("activity_events_user_" + user.id)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "activity_events", filter: "user_id=eq." + user.id },
+        () => refresh(user.id)
+      )
+      .subscribe();
+
+    return () => {
+      try { supabase.removeChannel(ch); } catch {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+
   async function refresh(userId) {
     const { data: p, error: pErr } = await supabase
       .from("user_profiles")
@@ -98,15 +118,21 @@ export default function Profile() {
     setNameInput(p?.display_name || "");
 
     // Weekly points + weekly done count
-    const { data: logRows, error: lErr } = await supabase
-      .from("activity_logs")
-      .select("points,event_type,created_at")
-      .eq("user_id", userId)
-      .gte("created_at", weekStart.toISOString())
-      .lt("created_at", weekEnd.toISOString());
-    if (!lErr) setWeekPoints((logRows || []).reduce((sum, r) => sum + (Number(r.points) || 0), 0));
+    // NOTE: points are allocated immediately when actions occur (DONE / set time / water target / sleep target etc.)
+    // We sum points from activity_events for the current week.
+    let points = 0;
+    {
+      const { data: evRows, error: evErr } = await supabase
+        .from("activity_events")
+        .select("points,created_at")
+        .eq("user_id", userId)
+        .gte("created_at", weekStart.toISOString())
+        .lt("created_at", weekEnd.toISOString());
+      if (!evErr) points = (evRows || []).reduce((sum, r) => sum + (Number(r.points) || 0), 0);
+    }
+    setWeekPoints(points);
 
-    const { data: doneRows, error: dErr } = await supabase
+const { data: doneRows, error: dErr } = await supabase
       .from("plans")
       .select("id")
       .eq("user_id", userId)
@@ -139,11 +165,16 @@ export default function Profile() {
   async function saveDisplayName() {
     if (!user) return;
     const name = (nameInput || "").trim();
+    setSaveStatus("Saving…");
     const { error } = await supabase.from("user_profiles").upsert(
       { user_id: user.id, display_name: name },
       { onConflict: "user_id" }
     );
-    if (error) return alert(error.message);
+    if (error) {
+      setSaveStatus("Could not save: " + error.message);
+      return alert(error.message);
+    }
+    setSaveStatus("Saved ✅");
     await refresh(user.id);
   }
 
@@ -192,6 +223,9 @@ export default function Profile() {
               Save
             </button>
           </div>
+            {saveStatus && (
+              <div style={{ marginTop: 8, fontSize: 13, opacity: 0.75 }}>{saveStatus}</div>
+            )}
         </div>
       </div>
 
