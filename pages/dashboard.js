@@ -47,6 +47,7 @@ export default function Dashboard() {
   const [supps, setSupps] = useState([]);
   const [takenMap, setTakenMap] = useState({});
   const [sleep, setSleep] = useState(null);
+  const [weighIn, setWeighIn] = useState(null);
 
   const [errMsg, setErrMsg] = useState("");
 
@@ -87,6 +88,7 @@ export default function Dashboard() {
     // settings
     {
       // Keep defaults lightweight — settings page can change everything
+      // Create settings row if missing. IMPORTANT: don't overwrite user-changed settings on every dashboard load.
       const { error } = await supabase.from("user_settings").upsert(
         {
           user_id: userId,
@@ -97,18 +99,30 @@ export default function Dashboard() {
           // activities the user wants to be accountable for
           included_activities: ["WALK", "RUN", "SPIN", "SWIM", "HILLWALK", "WEIGHTS", "HIIT", "YOGA", "PILATES", "OTHER"],
         },
-        { onConflict: "user_id" }
+        { onConflict: "user_id", ignoreDuplicates: true }
       );
       if (error) throw error;
     }
 
     // water (today)
     {
-      const { error } = await supabase.from("water_logs").upsert(
-        { user_id: userId, log_date: todayStr, ml_total: 0 },
-        { onConflict: "user_id,log_date" }
-      );
-      if (error) throw error;
+      // Some schemas use ml_total, some use ml.
+      let wErr = null;
+      {
+        const { error } = await supabase.from("water_logs").upsert(
+          { user_id: userId, log_date: todayStr, ml_total: 0 },
+          { onConflict: "user_id,log_date" }
+        );
+        wErr = error;
+      }
+      if (wErr && String(wErr.message || "").toLowerCase().includes("ml_total")) {
+        const { error } = await supabase.from("water_logs").upsert(
+          { user_id: userId, log_date: todayStr, ml: 0 },
+          { onConflict: "user_id,log_date" }
+        );
+        wErr = error;
+      }
+      if (wErr) throw wErr;
     }
 
     // plans (today + tomorrow) must exist
@@ -258,6 +272,34 @@ export default function Dashboard() {
         .maybeSingle();
       if (!slErr) setSleep(sl || null);
     }
+
+    // Sunday weigh-in
+    if (new Date().getDay() === 0) {
+      const { data: w, error: wErr } = await supabase
+        .from("weigh_ins")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("weigh_date", todayStr)
+        .maybeSingle();
+      if (!wErr) setWeighIn(w || null);
+    } else {
+      setWeighIn(null);
+    }
+  }
+
+  async function submitWeighIn() {
+    if (!user) return;
+    const w = prompt("Weight (kg)?");
+    if (!w) return;
+    const val = Number(w);
+    if (!Number.isFinite(val) || val <= 0) return alert("Invalid number");
+
+    const { error } = await supabase
+      .from("weigh_ins")
+      .upsert({ user_id: user.id, weigh_date: todayStr, weight_kg: val }, { onConflict: "user_id,weigh_date" });
+
+    if (error) alert(error.message);
+    await refreshAll(user.id);
   }
 
   // -----------------
@@ -307,7 +349,7 @@ export default function Dashboard() {
 
     const { error } = await supabase
       .from("plans")
-      .update({ planned_time: timeStr, updated_at: new Date().toISOString() })
+      .update({ planned_time: timeStr })
       .eq("id", tomorrowPlan.id);
     if (error) alert(error.message);
 
@@ -322,7 +364,7 @@ export default function Dashboard() {
     if (!user || !todayPlan) return;
     const { error } = await supabase
       .from("plans")
-      .update({ planned_time: timeStr, updated_at: new Date().toISOString() })
+      .update({ planned_time: timeStr })
       .eq("id", todayPlan.id);
     if (error) alert(error.message);
     await refreshAll(user.id);
@@ -333,7 +375,7 @@ export default function Dashboard() {
 
     const { error } = await supabase
       .from("plans")
-      .update({ status: "DONE", updated_at: new Date().toISOString() })
+      .update({ status: "DONE" })
       .eq("id", plan.id);
     if (error) {
       alert(error.message);
@@ -352,7 +394,7 @@ export default function Dashboard() {
 
     const { error } = await supabase
       .from("plans")
-      .update({ status: "CANCELLED", cancel_reason: reason, updated_at: new Date().toISOString() })
+      .update({ status: "CANCELLED", cancel_reason: reason })
       .eq("id", plan.id);
     if (error) alert(error.message);
 
@@ -366,12 +408,13 @@ export default function Dashboard() {
 
     const { error } = await supabase
       .from("plans")
-      .update({ status: "PLANNED", updated_at: new Date().toISOString() })
+      .update({ status: "PLANNED" })
       .eq("id", plan.id);
     if (error) return alert(error.message);
 
     await supabase.from("workout_logs").delete().eq("plan_id", plan.id);
-    await logEvent({ event_type: "undo_done", points: -10, plan_id: plan.id });
+    // Undo shouldn't nuke points. Light slap only.
+    await logEvent({ event_type: "undo_done", points: -2, plan_id: plan.id });
 
     await refreshAll(user.id);
   }
@@ -381,7 +424,7 @@ export default function Dashboard() {
 
     const { error } = await supabase
       .from("plans")
-      .update({ status: "PLANNED", cancel_reason: null, updated_at: new Date().toISOString() })
+      .update({ status: "PLANNED", cancel_reason: null })
       .eq("id", plan.id);
     if (error) return alert(error.message);
 
@@ -393,14 +436,28 @@ export default function Dashboard() {
   async function addWater(ml) {
     if (!user) return;
 
-    const current = water?.ml_total || 0;
+    const current = water?.ml_total ?? water?.ml ?? 0;
     const next = current + ml;
 
-    const { error } = await supabase.from("water_logs").upsert(
-      { user_id: user.id, log_date: todayStr, ml_total: next, updated_at: new Date().toISOString() },
-      { onConflict: "user_id,log_date" }
-    );
-    if (error) alert(error.message);
+    // Some schemas use ml_total, some use ml. Try ml_total first, then fallback.
+    let wErr = null;
+    {
+      const { error } = await supabase.from("water_logs").upsert(
+        { user_id: user.id, log_date: todayStr, ml_total: next },
+        { onConflict: "user_id,log_date" }
+      );
+      wErr = error;
+    }
+
+    if (wErr && String(wErr.message || "").toLowerCase().includes("ml_total")) {
+      const { error } = await supabase.from("water_logs").upsert(
+        { user_id: user.id, log_date: todayStr, ml: next },
+        { onConflict: "user_id,log_date" }
+      );
+      wErr = error;
+    }
+
+    if (wErr) alert(wErr.message);
 
     const target = settings?.water_target_ml || 3000;
     if (current < target && next >= target) {
@@ -434,7 +491,7 @@ export default function Dashboard() {
     if (!user) return;
 
     const { error } = await supabase.from("sleep_logs").upsert(
-      { user_id: user.id, log_date: todayStr, ...patch, updated_at: new Date().toISOString() },
+      { user_id: user.id, log_date: todayStr, ...patch },
       { onConflict: "user_id,log_date" }
     );
     if (error) alert(error.message);
@@ -635,7 +692,7 @@ export default function Dashboard() {
       {/* WATER */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Water (target {(waterTargetMl / 1000).toFixed(1)}L)</div>
-        <div style={{ fontSize: 22, fontWeight: 800 }}>{water?.ml_total || 0} ml</div>
+        <div style={{ fontSize: 22, fontWeight: 800 }}>{(water?.ml_total ?? water?.ml ?? 0)} ml</div>
         <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
           <button style={{ flex: 1, padding: 12, fontSize: 16 }} onClick={() => addWater(250)}>+250</button>
           <button style={{ flex: 1, padding: 12, fontSize: 16 }} onClick={() => addWater(500)}>+500</button>
@@ -699,6 +756,23 @@ export default function Dashboard() {
           </label>
         </div>
       </div>
+
+      {/* SUNDAY WEIGH-IN */}
+      {new Date().getDay() === 0 && (
+        <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+          <div style={{ fontSize: 14, opacity: 0.8 }}>Sunday weigh-in (hard cutoff 23:59)</div>
+          <div style={{ fontSize: 22, fontWeight: 800, marginTop: 6 }}>
+            {weighIn ? `${weighIn.weight_kg} kg logged` : "Not logged"}
+          </div>
+          <button
+            style={{ width: "100%", padding: 12, marginTop: 10, fontSize: 16 }}
+            onClick={submitWeighIn}
+            disabled={!!weighIn}
+          >
+            LOG WEIGHT
+          </button>
+        </div>
+      )}
     </div>
   );
 }
