@@ -93,10 +93,11 @@ export default function WeekPlan() {
 
   async function ensureRows(userId) {
     // Create rows if missing (relies on unique user_id+plan_date)
+    // IMPORTANT: do NOT overwrite existing plan rows (otherwise it looks like your plan "resets to REST").
     for (const d of dates) {
       await supabase.from("plans").upsert(
         { user_id: userId, plan_date: d, plan_type: "REST", status: "PLANNED" },
-        { onConflict: "user_id,plan_date" }
+        { onConflict: "user_id,plan_date", ignoreDuplicates: true }
       );
     }
   }
@@ -115,9 +116,10 @@ export default function WeekPlan() {
   async function setPlan(planId, patch) {
     if (!user) return;
     if (!canEdit) return alert("Only the team leader can edit the plan.");
+    // Avoid touching columns that may not exist in your schema (e.g. updated_at)
     const { error } = await supabase
       .from("plans")
-      .update({ ...patch, updated_at: new Date().toISOString() })
+      .update({ ...patch })
       .eq("id", planId);
     if (error) alert(error.message);
     await refresh(user.id);
