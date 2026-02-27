@@ -1,61 +1,48 @@
 // pages/settings.js
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
+import { enablePush, getPushState } from "../lib/onesignal";
 
-const TONE_OPTIONS = [
-  { value: "normal", label: "Normal" },
-  { value: "brutal", label: "Brutal" },
-  { value: "savage", label: "Savage" },
-];
+const TIME_PRESETS = ["08:00", "12:00", "18:00"];
 
-const ACTIVITY_OPTIONS = [
-  { value: "REST", label: "Rest day" },
-  { value: "WALK", label: "Walk" },
-  { value: "RUN", label: "Run" },
-  { value: "SPIN", label: "Spin" },
-  { value: "HIIT", label: "HIIT" },
-  { value: "SWIM", label: "Swim" },
-  { value: "HILLWALK", label: "Hillwalk" },
-  { value: "WEIGHTS", label: "Weights" },
-  { value: "YOGA", label: "Yoga" },
-  { value: "PILATES", label: "Pilates" },
-  { value: "MOBILITY", label: "Mobility" },
-  { value: "OTHER", label: "Other" },
-];
-
-function normalizeTime(t) {
-  if (!t) return "";
-  const m = /^([0-9]{1,2}):([0-9]{2})$/.exec(String(t).trim());
-  if (!m) return "";
-  const hh = String(Math.max(0, Math.min(23, Number(m[1])))).padStart(2, "0");
-  const mm = String(Math.max(0, Math.min(59, Number(m[2])))).padStart(2, "0");
-  return `${hh}:${mm}`;
+function labelActivity(a) {
+  const map = {
+    WALK: "Walk",
+    RUN: "Run",
+    SPIN: "Spin",
+    HIIT: "HIIT",
+    SWIM: "Swim",
+    WEIGHTS: "Weights",
+    REST: "Rest",
+    YOGA: "Yoga",
+    PILATES: "Pilates",
+    OTHER: "Other",
+  };
+  return map[a] || a;
 }
 
-function ruleLabel(s) {
-  if (!s?.rule_type) return "Anytime";
-  if (s.rule_type === "PRE_WORKOUT") {
-    const off = Number(s.offset_minutes || 0);
-    const sign = off < 0 ? "" : "+";
-    return `Pre-workout (${sign}${off}m)`;
-  }
-  if (s.rule_type === "MORNING_WINDOW") return `Morning (${s.window_start || "06:00"}–${s.window_end || "10:00"})`;
-  if (s.rule_type === "EVENING_WINDOW") return `Evening (${s.window_start || "17:00"}–${s.window_end || "21:00"})`;
-  if (s.rule_type === "BED_WINDOW") return `Bed (${s.window_start || "21:00"}–${s.window_end || "23:59"})`;
-  return "Anytime";
+function labelRule(r) {
+  const map = {
+    MORNING_WINDOW: "Morning",
+    PRE_WORKOUT: "Pre-workout",
+    EVENING_WINDOW: "Evening",
+    BED_WINDOW: "Bedtime",
+    ANYTIME: "Any time",
+  };
+  return map[r] || r;
 }
 
 export default function Settings() {
   const [user, setUser] = useState(null);
   const [settings, setSettings] = useState(null);
   const [supps, setSupps] = useState([]);
-  const [err, setErr] = useState("");
+  const [pushState, setPushState] = useState({ supported: false, permission: "default", subscribed: false });
+  const [errMsg, setErrMsg] = useState("");
 
-  const reminderTimes = useMemo(() => {
-    const t = settings?.reminder_times;
-    if (!Array.isArray(t)) return ["08:00", "12:00", "18:00"];
-    return t.map(normalizeTime).filter(Boolean).slice(0, 5);
-  }, [settings?.reminder_times]);
+  const allActivities = useMemo(
+    () => ["WALK", "RUN", "SPIN", "HIIT", "SWIM", "WEIGHTS", "REST", "YOGA", "PILATES", "OTHER"],
+    []
+  );
 
   useEffect(() => {
     (async () => {
@@ -68,27 +55,37 @@ export default function Settings() {
         }
         setUser(data.user);
 
-        // Ensure defaults exist, but don't overwrite existing user choices.
-        await supabase.from("user_settings").upsert(
-          {
-            user_id: data.user.id,
-            mode: "solo",
-            tone_mode: "normal",
-            water_target_ml: 3000,
-            sleep_target_hours: 8,
-            reminder_times: ["08:00", "12:00", "18:00"],
-            included_activities: ["WALK", "RUN", "SPIN", "HIIT", "SWIM", "WEIGHTS"],
-            timezone: "Europe/London",
-          },
-          { onConflict: "user_id" }
-        );
-
+        await ensureUserSettings(data.user.id);
         await refresh(data.user.id);
+        await refreshPush();
       } catch (e) {
-        setErr(e?.message || String(e));
+        setErrMsg(e?.message || String(e));
       }
     })();
   }, []);
+
+  async function ensureUserSettings(userId) {
+    const { data: st, error: stErr } = await supabase
+      .from("user_settings")
+      .select("user_id")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (stErr) throw stErr;
+
+    if (!st) {
+      const { error } = await supabase.from("user_settings").insert({
+        user_id: userId,
+        mode: "solo",
+        tone_mode: "normal",
+        timezone: "Europe/London",
+        water_target_ml: 3000,
+        sleep_target_hours: 8,
+        reminder_times: TIME_PRESETS,
+        included_activities: ["WALK", "RUN", "SPIN", "HIIT", "SWIM", "WEIGHTS"],
+      });
+      if (error) throw error;
+    }
+  }
 
   async function refresh(userId) {
     const { data: st, error: stErr } = await supabase
@@ -102,30 +99,51 @@ export default function Settings() {
     const { data: s, error: sErr } = await supabase
       .from("supplements")
       .select("*")
-      .eq("user_id", userId)
-      .order("name");
-    if (sErr) throw sErr;
-    setSupps(s || []);
+      .order("sort_order", { ascending: true });
+    if (!sErr) setSupps(s || []);
   }
 
-  async function saveSettings(patch) {
+  async function refreshPush() {
+    try {
+      const st = await getPushState();
+      setPushState(st);
+    } catch {
+      setPushState({ supported: false, permission: "default", subscribed: false });
+    }
+  }
+
+  async function updateSettings(patch) {
     if (!user) return;
-    const { error } = await supabase
-      .from("user_settings")
-      .update({ ...patch, updated_at: new Date().toISOString() })
-      .eq("user_id", user.id);
-    if (error) alert(error.message);
+    const { error } = await supabase.from("user_settings").update(patch).eq("user_id", user.id);
+    if (error) return alert(error.message);
     await refresh(user.id);
   }
 
-  async function toggleSupplementActive(s) {
-    if (!user) return;
-    const { error } = await supabase
-      .from("supplements")
-      .update({ active: !s.active, updated_at: new Date().toISOString() })
-      .eq("id", s.id);
-    if (error) alert(error.message);
-    await refresh(user.id);
+  async function toggleReminderTime(t) {
+    const current = settings?.reminder_times || [];
+    const next = current.includes(t) ? current.filter((x) => x !== t) : [...current, t].sort();
+    await updateSettings({ reminder_times: next });
+  }
+
+  async function toggleActivity(a) {
+    const current = settings?.included_activities || [];
+    const next = current.includes(a) ? current.filter((x) => x !== a) : [...current, a].sort();
+    await updateSettings({ included_activities: next });
+  }
+
+  async function setToneMode(v) {
+    await updateSettings({ tone_mode: v });
+  }
+
+  async function enablePushNow() {
+    const res = await enablePush();
+    if (!res.ok) {
+      alert(res.reason || "Push not enabled");
+      await refreshPush();
+      return;
+    }
+    await refreshPush();
+    alert("Push enabled ✅");
   }
 
   async function logout() {
@@ -133,149 +151,172 @@ export default function Settings() {
     window.location.href = "/";
   }
 
-  if (err) {
+  if (errMsg) {
     return (
-      <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
+      <div style={{ padding: 20, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
         <h2>Settings</h2>
-        <div><b>Error:</b> {err}</div>
-        <button style={{ marginTop: 12 }} onClick={logout}>Logout</button>
+        <p>
+          <b>Error:</b> {errMsg}
+        </p>
+        <button onClick={logout}>Logout</button>
       </div>
     );
   }
 
   if (!settings) {
-    return <div style={{ padding: 18, fontFamily: "system-ui" }}>Loading…</div>;
+    return <div style={{ padding: 20, fontFamily: "system-ui" }}>Loading…</div>;
   }
 
-  const included = new Set(Array.isArray(settings.included_activities) ? settings.included_activities : []);
+  const reminders = settings.reminder_times || [];
+  const incActs = settings.included_activities || [];
 
   return (
     <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
         <h2 style={{ margin: 0 }}>Settings</h2>
-        <a href="/dashboard" style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}>
+        <a
+          href="/dashboard"
+          style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}
+        >
           Back
         </a>
       </div>
 
-      {/* TONE / MODE */}
-      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
-        <div style={{ fontSize: 14, opacity: 0.8 }}>Tone</div>
-        <select
-          value={settings.tone_mode || "normal"}
-          onChange={(e) => saveSettings({ tone_mode: e.target.value })}
-          style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 10 }}
+      <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
+        <a
+          href="/team"
+          style={{ flex: 1, padding: 12, border: "1px solid #ddd", borderRadius: 12, textAlign: "center", textDecoration: "none" }}
         >
-          {TONE_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>{o.label}</option>
-          ))}
-        </select>
+          Pact
+        </a>
+        <a
+          href="/profile"
+          style={{ flex: 1, padding: 12, border: "1px solid #ddd", borderRadius: 12, textAlign: "center", textDecoration: "none" }}
+        >
+          Profile
+        </a>
+      </div>
 
-        <div style={{ marginTop: 12, fontSize: 12, opacity: 0.7 }}>
-          Tone affects the copy in reminders + “brutal” messages.
+      {/* PUSH */}
+      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Push notifications</div>
+        <div style={{ marginTop: 8, fontWeight: 800 }}>
+          {pushState.subscribed ? "Enabled" : pushState.supported ? "Not enabled" : "Not supported"}
+        </div>
+        <div style={{ marginTop: 6, fontSize: 13, opacity: 0.7 }}>Permission: {pushState.permission}</div>
+        <button style={{ width: "100%", padding: 12, marginTop: 10 }} onClick={enablePushNow}>
+          Enable push
+        </button>
+        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.65 }}>
+          Android: use Chrome, and ensure notification permission is allowed for this site.
         </div>
       </div>
 
-      {/* REMINDERS */}
+      {/* MODE / TONE */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
-        <div style={{ fontSize: 14, opacity: 0.8 }}>Reminder times</div>
-        <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-          {reminderTimes.map((t, idx) => (
-            <input
-              key={idx}
-              type="time"
-              value={t}
-              onChange={(e) => {
-                const next = [...reminderTimes];
-                next[idx] = normalizeTime(e.target.value);
-                saveSettings({ reminder_times: next.filter(Boolean) });
-              }}
-              style={{ width: "100%", padding: 12, fontSize: 16 }}
-            />
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Tone mode</div>
+        <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+          {[
+            ["normal", "Normal"],
+            ["brutal", "Brutal"],
+            ["kind", "Kind"],
+          ].map(([v, label]) => (
+            <button
+              key={v}
+              style={{ flex: 1, padding: 12, fontWeight: 800, opacity: settings.tone_mode === v ? 1 : 0.5 }}
+              onClick={() => setToneMode(v)}
+            >
+              {label}
+            </button>
           ))}
-        </div>
-        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
-          These are used for push notifications. If push is disabled, they do nothing.
         </div>
       </div>
 
       {/* TARGETS */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
-        <div style={{ fontSize: 14, opacity: 0.8 }}>Targets</div>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Daily targets</div>
 
-        <label style={{ display: "grid", gap: 6, marginTop: 10 }}>
-          <div style={{ fontSize: 13, opacity: 0.7 }}>Water target (ml)</div>
-          <input
-            type="number"
-            value={settings.water_target_ml ?? 3000}
-            onChange={(e) => saveSettings({ water_target_ml: Number(e.target.value || 0) })}
-            style={{ width: "100%", padding: 12, fontSize: 16 }}
-          />
-        </label>
+        <div style={{ marginTop: 10, fontSize: 13, opacity: 0.7 }}>Sleep target (hours)</div>
+        <input
+          type="number"
+          min={4}
+          max={12}
+          value={settings.sleep_target_hours ?? 8}
+          onChange={(e) => updateSettings({ sleep_target_hours: Number(e.target.value || 8) })}
+          style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 6 }}
+        />
 
-        <label style={{ display: "grid", gap: 6, marginTop: 10 }}>
-          <div style={{ fontSize: 13, opacity: 0.7 }}>Sleep target (hours)</div>
-          <input
-            type="number"
-            step="0.5"
-            value={settings.sleep_target_hours ?? 8}
-            onChange={(e) => saveSettings({ sleep_target_hours: Number(e.target.value || 0) })}
-            style={{ width: "100%", padding: 12, fontSize: 16 }}
-          />
-        </label>
+        <div style={{ marginTop: 12, fontSize: 13, opacity: 0.7 }}>Water target (ml)</div>
+        <input
+          type="number"
+          min={500}
+          step={250}
+          value={settings.water_target_ml ?? 3000}
+          onChange={(e) => updateSettings({ water_target_ml: Number(e.target.value || 3000) })}
+          style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 6 }}
+        />
       </div>
 
-      {/* INCLUDED WORKOUT TYPES */}
+      {/* REMINDERS */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
-        <div style={{ fontSize: 14, opacity: 0.8 }}>Workout types (for week planning)</div>
-        <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-          {ACTIVITY_OPTIONS.filter((a) => a.value !== "REST").map((a) => (
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Reminder times</div>
+        <div style={{ marginTop: 10, fontSize: 13, opacity: 0.7 }}>
+          Only used for push notifications (when enabled).
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 10 }}>
+          {TIME_PRESETS.map((t) => (
             <button
-              key={a.value}
-              onClick={() => {
-                const next = new Set(included);
-                if (next.has(a.value)) next.delete(a.value);
-                else next.add(a.value);
-                saveSettings({ included_activities: Array.from(next) });
-              }}
-              style={{
-                padding: 12,
-                textAlign: "left",
-                border: "1px solid #eee",
-                borderRadius: 12,
-                opacity: included.has(a.value) ? 1 : 0.45,
-              }}
+              key={t}
+              style={{ padding: 12, fontWeight: 800, opacity: reminders.includes(t) ? 1 : 0.4 }}
+              onClick={() => toggleReminderTime(t)}
             >
-              <b>{included.has(a.value) ? "✅" : "⬜"} {a.label}</b>
+              {t}
             </button>
           ))}
         </div>
       </div>
 
-      {/* SUPPLEMENTS */}
+      {/* ACTIVITIES */}
+      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Activities included</div>
+        <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+          {allActivities.map((a) => (
+            <label
+              key={a}
+              style={{ display: "flex", gap: 10, alignItems: "center", padding: 12, border: "1px solid #eee", borderRadius: 12 }}
+            >
+              <input type="checkbox" checked={incActs.includes(a)} onChange={() => toggleActivity(a)} />
+              <div style={{ fontWeight: 800 }}>{labelActivity(a)}</div>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* SUPPLEMENTS (fixed list, no user-added) */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Supplements included</div>
+        <div style={{ marginTop: 8, fontSize: 13, opacity: 0.7 }}>This list is managed by the admin (not user-editable).</div>
         <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
           {supps.map((s) => (
-            <button
+            <label
               key={s.id}
-              onClick={() => toggleSupplementActive(s)}
-              style={{
-                padding: 12,
-                textAlign: "left",
-                border: "1px solid #eee",
-                borderRadius: 12,
-                opacity: s.active ? 1 : 0.45,
-              }}
+              style={{ display: "flex", gap: 10, alignItems: "center", padding: 12, border: "1px solid #eee", borderRadius: 12 }}
             >
-              <div style={{ fontWeight: 800 }}>{s.active ? "✅" : "⬜"} {s.name}</div>
-              <div style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}>{ruleLabel(s)}</div>
-            </button>
+              <input
+                type="checkbox"
+                checked={!!s.active}
+                onChange={async () => {
+                  const { error } = await supabase.from("supplements").update({ active: !s.active }).eq("id", s.id);
+                  if (error) alert(error.message);
+                  await refresh(user.id);
+                }}
+              />
+              <div>
+                <div style={{ fontWeight: 800 }}>{s.name}</div>
+                <div style={{ fontSize: 12, opacity: 0.65 }}>{labelRule(s.rule)}</div>
+              </div>
+            </label>
           ))}
-        </div>
-
-        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
-          (Deliberately locked) Supplements are managed centrally for now — no adding custom ones in settings.
         </div>
       </div>
 
