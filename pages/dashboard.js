@@ -50,11 +50,30 @@ export default function Dashboard() {
   const [weighIn, setWeighIn] = useState(null);
 
   const [errMsg, setErrMsg] = useState("");
+  const [actionMsg, setActionMsg] = useState("");
 
   const today = useMemo(() => new Date(), []);
   const tomorrow = useMemo(() => addDays(today, 1), [today]);
   const todayStr = isoDate(today);
-  const tomorrowStr = isoDate(tomorrow);
+  
+function mondayStart(d) {
+  const x = new Date(d);
+  const day = x.getDay(); // 0=Sun
+  const diff = day === 0 ? -6 : 1 - day;
+  x.setDate(x.getDate() + diff);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function sundayEnd(d) {
+  const m = mondayStart(d);
+  const s = new Date(m);
+  s.setDate(s.getDate() + 6);
+  s.setHours(0, 0, 0, 0);
+  return s;
+}
+
+const tomorrowStr = isoDate(tomorrow);
 
   useEffect(() => {
     (async () => {
@@ -208,10 +227,8 @@ export default function Dashboard() {
     setTodayPlan(tp);
     setTomorrowPlan(tomp);
 
-    // plans (current week only: today -> Sunday)
-    const dow = new Date().getDay(); // 0=Sun
-    const daysUntilSunday = (7 - dow) % 7; // Sun => 0
-    const end = isoDate(addDays(today, daysUntilSunday));
+    // plans (7 days)
+    const end = isoDate(addDays(today, 6));
     {
       const { data: wp, error: wpErr } = await supabase
         .from("plans")
@@ -308,25 +325,35 @@ export default function Dashboard() {
   // Points event logger (idempotent via unique indexes)
   // -----------------
   async function logEvent({ event_type, points, plan_id = null, meta = {} }) {
-    if (!user) return;
-    const team_id = settings?.team_id || null;
+  if (!user) return;
+  const team_id = settings?.team_id || null;
 
-    const payload = {
-      user_id: user.id,
-      team_id,
-      plan_id,
-      event_type,
-      points,
-      meta,
-      // event_date default at DB
-    };
+  const payload = {
+    user_id: user.id,
+    team_id,
+    plan_id,
+    event_type,
+    points,
+    meta,
+    // event_date default at DB
+  };
 
-    const conflict = plan_id
-      ? "user_id,plan_id,event_type,event_date"
-      : "user_id,event_type,event_date";
+  // Prefer upsert if you have the unique indexes; fall back to insert if not.
+  const conflict = plan_id
+    ? "user_id,plan_id,event_type,event_date"
+    : "user_id,event_type,event_date";
 
-    await supabase.from("activity_events").upsert(payload, { onConflict: conflict });
+  let res = await supabase.from("activity_events").upsert(payload, { onConflict: conflict });
+  if (res?.error) {
+    // common: no unique index for upsert -> fall back to insert
+    const ins = await supabase.from("activity_events").insert(payload);
+    if (ins?.error && ins.error.code !== "23505") {
+      // 23505 = duplicate (fine)
+      setActionMsg(ins.error.message);
+    }
   }
+}
+
 
   function suppWhenLabel(s, planTime) {
     const pt = planTime || "??:??";
@@ -416,7 +443,8 @@ export default function Dashboard() {
 
     await supabase.from("workout_logs").delete().eq("plan_id", plan.id);
     // Undo shouldn't nuke points. Light slap only.
-    
+    await logEvent({ event_type: "undo_done", points: -2, plan_id: plan.id });
+
     await refreshAll(user.id);
   }
 
@@ -429,7 +457,8 @@ export default function Dashboard() {
       .eq("id", plan.id);
     if (error) return alert(error.message);
 
-    
+    await logEvent({ event_type: "undo_cancel", points: 5, plan_id: plan.id });
+
     await refreshAll(user.id);
   }
 
@@ -457,7 +486,7 @@ export default function Dashboard() {
       wErr = error;
     }
 
-    if (wErr) alert(wErr.message);
+    if (wErr) { setActionMsg(wErr.message); alert(wErr.message); }
 
     const target = settings?.water_target_ml || 3000;
     if (current < target && next >= target) {
@@ -547,30 +576,13 @@ export default function Dashboard() {
 
   return (
     <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-        <h2 style={{ margin: 0 }}>Pact</h2>
-        <div style={{ display: "flex", gap: 8 }}>
-          <a
-            href="/team"
-            style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}
-          >
-            Pact
-          </a>
-          <a
-            href="/profile"
-            style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}
-          >
-            Profile
-          </a>
-          <a
-            href="/settings"
-            style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}
-          >
-            Settings
-          </a>
-          <button onClick={logout}>Logout</button>
+      <TopNav active="dashboard" onLogout={logout} />
+
+      {actionMsg && (
+        <div style={{ marginTop: 12, padding: 12, border: "1px solid #f2c", borderRadius: 12 }}>
+          <b>Note:</b> {actionMsg}
         </div>
-      </div>
+      )}
 
       {/* TODAY */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
@@ -758,19 +770,33 @@ export default function Dashboard() {
       </div>
 
       {/* WEIGH-IN */}
-      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12, opacity: new Date().getDay() === 0 ? 1 : 0.55 }}>
-        <div style={{ fontSize: 14, opacity: 0.8 }}>Sunday weigh-in (hard cutoff 23:59)</div>
-        <div style={{ fontSize: 22, fontWeight: 800, marginTop: 6 }}>
-          {weighIn ? `${weighIn.weight_kg} kg logged` : "Not logged"}
+<div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12, opacity: new Date().getDay() === 0 ? 1 : 0.6 }}>
+  <div style={{ fontSize: 14, opacity: 0.8 }}>Sunday weigh-in (hard cutoff 23:59)</div>
+  <div style={{ fontSize: 22, fontWeight: 800 }}>
+    {new Date().getDay() === 0 ? (weighIn ? `${weighIn.weight_kg} kg logged` : "Not logged") : "Available on Sunday"}
+  </div>
+  <button
+    style={{ width: "100%", padding: 12, marginTop: 10, fontSize: 16 }}
+    onClick={submitWeighIn}
+    disabled={new Date().getDay() !== 0 || !!weighIn}
+  >
+    LOG WEIGHT
+  </button>
+</div>
+        <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+          <div style={{ fontSize: 14, opacity: 0.8 }}>Sunday weigh-in (hard cutoff 23:59)</div>
+          <div style={{ fontSize: 22, fontWeight: 800, marginTop: 6 }}>
+            {weighIn ? `${weighIn.weight_kg} kg logged` : "Not logged"}
+          </div>
+          <button
+            style={{ width: "100%", padding: 12, marginTop: 10, fontSize: 16 }}
+            onClick={submitWeighIn}
+            disabled={!!weighIn}
+          >
+            LOG WEIGHT
+          </button>
         </div>
-        <button
-          style={{ width: "100%", padding: 12, marginTop: 10, fontSize: 16 }}
-          onClick={submitWeighIn}
-          disabled={new Date().getDay() !== 0 || !!weighIn}
-        >
-          {new Date().getDay() === 0 ? "LOG WEIGHT" : "LOG WEIGHT (Sunday only)"}
-        </button>
-      </div>
+      )}
     </div>
   );
 }
