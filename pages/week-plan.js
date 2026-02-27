@@ -108,7 +108,7 @@ export default function WeekPlan() {
 
   async function ensureRows(userId) {
     // Create rows if missing (relies on unique user_id+plan_date)
-    // IMPORTANT: do NOT overwrite existing plan rows (otherwise it looks like your plan "resets to REST").
+    // IMPORTANT: do NOT overwrite existing plan rows.
     for (const d of dates) {
       await supabase.from("plans").upsert(
         { user_id: userId, plan_date: d, plan_type: "REST", status: "PLANNED" },
@@ -131,11 +131,7 @@ export default function WeekPlan() {
   async function setPlan(planId, patch) {
     if (!user) return;
     if (!canEdit) return alert("Only the team leader can edit the plan.");
-    // Avoid touching columns that may not exist in your schema (e.g. updated_at)
-    const { error } = await supabase
-      .from("plans")
-      .update({ ...patch })
-      .eq("id", planId);
+    const { error } = await supabase.from("plans").update({ ...patch }).eq("id", planId);
     if (error) alert(error.message);
     await refresh(user.id);
   }
@@ -147,25 +143,35 @@ export default function WeekPlan() {
 
   if (err) {
     return (
-      <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
-      <TopNav active="dashboard" onLogout={logout} />
-        <h2>Week plan</h2>
-        <div><b>Error:</b> {err}</div>
-        <button style={{ marginTop: 12 }} onClick={logout}>Logout</button>
+      <div>
+        <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
+          <TopNav active="plan" onLogout={logout} />
+          <h2 style={{ marginTop: 14 }}>Week plan</h2>
+          <div>
+            <b>Error:</b> {err}
+          </div>
+          <button style={{ marginTop: 12 }} onClick={logout}>
+            Logout
+          </button>
+        </div>
       </div>
     );
   }
 
-  if (!settings) return <div style={{ padding: 18, fontFamily: "system-ui" }}>Loading…</div>;
+  if (!settings) {
+    return (
+      <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
+        <TopNav active="plan" onLogout={logout} />
+        <div style={{ marginTop: 14 }}>Loading…</div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h2 style={{ margin: 0 }}>Week plan</h2>
-        <a href="/dashboard" style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}>
-          Back
-        </a>
-      </div>
+      <TopNav active="plan" onLogout={logout} />
+
+      <h2 style={{ margin: "14px 0 0" }}>Week plan</h2>
 
       {settings.mode === "team" && (
         <div style={{ marginTop: 10, fontSize: 13, opacity: 0.8 }}>
@@ -191,7 +197,9 @@ export default function WeekPlan() {
               style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 8 }}
             >
               {allowedTypes.map((t) => (
-                <option key={t.value} value={t.value}>{t.label}</option>
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
               ))}
             </select>
 
