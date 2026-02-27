@@ -101,10 +101,21 @@ export default function Settings() {
         // ✅ IMPORTANT FIX: do NOT overwrite settings on every page load
         await ensureUserSettingsRow(data.user.id);
 
-        // Ensure profile row exists (for target weight fallback)
-        await supabase
-          .from("user_profiles")
-          .upsert({ user_id: data.user.id, display_name: "" }, { onConflict: "user_id" });
+        // Ensure profile row exists WITHOUT overwriting existing values
+const { data: existingProfile, error: profSelErr } = await supabase
+  .from("user_profiles")
+  .select("user_id")
+  .eq("user_id", data.user.id)
+  .maybeSingle();
+
+if (profSelErr) throw profSelErr;
+
+if (!existingProfile) {
+  const { error: profInsErr } = await supabase
+    .from("user_profiles")
+    .insert({ user_id: data.user.id, display_name: "" });
+  if (profInsErr) throw profInsErr;
+}
 
         await refresh(data.user.id);
       } catch (e) {
