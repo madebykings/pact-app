@@ -49,23 +49,21 @@ export default function Team() {
         }
         setUser(data.user);
 
-        // ✅ Create settings row only if missing (DO NOT overwrite mode/team_id)
-        {
-          const { data: existing, error: selErr } = await supabase
-            .from("user_settings")
-            .select("user_id")
-            .eq("user_id", data.user.id)
-            .maybeSingle();
-          if (selErr) throw selErr;
+        // Ensure settings row exists (do NOT overwrite)
+        const { data: existing, error: selErr } = await supabase
+          .from("user_settings")
+          .select("user_id")
+          .eq("user_id", data.user.id)
+          .maybeSingle();
+        if (selErr) throw selErr;
 
-          if (!existing) {
-            const { error: insErr } = await supabase.from("user_settings").insert({
-              user_id: data.user.id,
-              mode: "solo",
-              timezone: "Europe/London",
-            });
-            if (insErr) throw insErr;
-          }
+        if (!existing) {
+          const { error: insErr } = await supabase.from("user_settings").insert({
+            user_id: data.user.id,
+            mode: "solo",
+            timezone: "Europe/London",
+          });
+          if (insErr) throw insErr;
         }
 
         await refresh(data.user.id);
@@ -98,7 +96,7 @@ export default function Team() {
     if (tErr) throw tErr;
     setMyTeam(teamRow || null);
 
-    // Members (team_members + user_profiles)
+    // Members
     const { data: tm, error: tmErr } = await supabase.from("team_members").select("user_id,role").eq("team_id", tid);
     if (tmErr) throw tmErr;
 
@@ -121,7 +119,7 @@ export default function Team() {
       .sort((a, b) => (a.role === "owner" ? -1 : 1));
     setMembers(mem);
 
-    // Outgoing invites
+    // Invites
     const { data: outInv, error: outErr } = await supabase
       .from("team_invites")
       .select("*")
@@ -135,7 +133,7 @@ export default function Team() {
   async function setMode(mode) {
     if (!user) return;
 
-    // read team_id fresh to avoid stale settings issues
+    // Re-read team_id to avoid stale state
     const { data: st, error: stErr } = await supabase
       .from("user_settings")
       .select("team_id")
@@ -144,9 +142,14 @@ export default function Team() {
     if (stErr) return alert(stErr.message);
 
     const hasTeam = !!st?.team_id;
-    const next = mode === "team" && !hasTeam ? "solo" : mode;
 
-    const { error } = await supabase.from("user_settings").update({ mode: next }).eq("user_id", user.id);
+    // ✅ Rule: cannot select solo while in a team (must leave first)
+    if (mode === "solo" && hasTeam) {
+      alert("You can’t switch to Solo while you’re in a team. Leave the team first.");
+      return;
+    }
+
+    const { error } = await supabase.from("user_settings").update({ mode }).eq("user_id", user.id);
     if (error) return alert(error.message);
 
     await refresh(user.id);
@@ -157,7 +160,11 @@ export default function Team() {
     const name = teamName.trim();
     if (!name) return alert("Enter a team name");
 
-    const { data: teamRow, error: tErr } = await supabase.from("teams").insert({ name, owner_id: user.id }).select("*").single();
+    const { data: teamRow, error: tErr } = await supabase
+      .from("teams")
+      .insert({ name, owner_id: user.id })
+      .select("*")
+      .single();
     if (tErr) return alert(tErr.message);
 
     const { error: mErr } = await supabase.from("team_members").insert({
@@ -195,12 +202,12 @@ export default function Team() {
 
     const token = randomToken(28);
 
-    // ✅ Respect your DB constraint by using existing convention (your previous file used uppercase)
+    // ✅ FIX: must be one of: pending/accepted/expired/revoked
     const { error } = await supabase.from("team_invites").insert({
       team_id: settings.team_id,
       email,
       token,
-      status: "PENDING",
+      status: "pending",
       created_by: user.id,
       inviter_id: user.id,
     });
@@ -210,14 +217,9 @@ export default function Team() {
     setInviteEmail("");
 
     const link = siteUrl ? `${siteUrl}/invite/${token}` : `/invite/${token}`;
-
     const ok = await copyToClipboard(link);
-    if (ok) {
-      alert("Invite link copied to clipboard ✅");
-    } else {
-      // fallback for browsers without clipboard permissions
-      prompt("Copy this invite link:", link);
-    }
+    if (ok) alert("Invite link copied to clipboard ✅");
+    else prompt("Copy this invite link:", link);
 
     await refresh(user.id);
   }
@@ -245,7 +247,7 @@ export default function Team() {
 
     await supabase
       .from("team_invites")
-      .update({ status: "ACCEPTED", accepted_at: new Date().toISOString() })
+      .update({ status: "accepted", accepted_at: new Date().toISOString() })
       .eq("id", invite.id);
 
     const { error: sErr } = await supabase
@@ -266,7 +268,7 @@ export default function Team() {
       .from("team_invites")
       .select("*")
       .eq("token", token)
-      .eq("status", "PENDING")
+      .eq("status", "pending")
       .maybeSingle();
 
     if (invErr) return alert(invErr.message);
@@ -286,18 +288,13 @@ export default function Team() {
     window.location.href = "/";
   }
 
-  // --------------------
-  // Render
-  // --------------------
   if (errMsg) {
     return (
       <div>
         <TopNav active="pact" onLogout={logout} />
         <div style={{ padding: 18, maxWidth: 980, margin: "0 auto" }}>
-          <h1 style={{ margin: "0 0 14px" }}>Team / Solo</h1>
-          <p>
-            <b>Error:</b> {errMsg}
-          </p>
+          <h1 style={{ margin: "0 0 14px" }}>Pact</h1>
+          <p><b>Error:</b> {errMsg}</p>
         </div>
       </div>
     );
@@ -317,14 +314,11 @@ export default function Team() {
 
   return (
     <div>
-      {/* ✅ FIX: Team tab highlight works because TopNav is actually rendered on the page */}
       <TopNav active="pact" onLogout={logout} />
 
-      {/* ✅ Match Dashboard layout style */}
       <div style={{ padding: 18, maxWidth: 980, margin: "0 auto" }}>
-        <h1 style={{ margin: "0 0 14px" }}>Team / Solo</h1>
+        <h1 style={{ margin: "0 0 14px" }}>Pact</h1>
 
-        {/* Leaderboard (kept) */}
         <div style={{ marginBottom: 16 }}>
           <a
             href="/leaderboard"
@@ -347,11 +341,19 @@ export default function Team() {
           <div style={{ fontSize: 14, opacity: 0.8 }}>Mode</div>
           <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
             <button
-              style={{ flex: "1 1 160px", padding: 12, fontWeight: 800, opacity: settings.mode === "solo" ? 1 : 0.5 }}
+              style={{
+                flex: "1 1 160px",
+                padding: 12,
+                fontWeight: 800,
+                opacity: settings.mode === "solo" ? 1 : 0.5,
+              }}
               onClick={() => setMode("solo")}
+              disabled={isInTeam}
+              title={isInTeam ? "Leave the team to switch to Solo" : ""}
             >
               Solo
             </button>
+
             <button
               style={{ flex: "1 1 160px", padding: 12, fontWeight: 800, opacity: isTeamMode ? 1 : 0.5 }}
               onClick={() => setMode("team")}
@@ -361,10 +363,20 @@ export default function Team() {
               Team
             </button>
           </div>
-          {!isInTeam && <div style={{ marginTop: 10, fontSize: 13, opacity: 0.7 }}>Create or join a team to enable Team mode.</div>}
+
+          {isInTeam && (
+            <div style={{ marginTop: 10, fontSize: 13, opacity: 0.7 }}>
+              To go Solo, you must leave the team first.
+            </div>
+          )}
+          {!isInTeam && (
+            <div style={{ marginTop: 10, fontSize: 13, opacity: 0.7 }}>
+              Create or join a team to enable Team mode.
+            </div>
+          )}
         </div>
 
-        {/* JOIN WITH TOKEN */}
+        {/* JOIN */}
         {!isInTeam && (
           <div style={{ padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12, marginBottom: 16 }}>
             <div style={{ fontSize: 14, opacity: 0.8 }}>Join with invite token</div>
@@ -395,7 +407,9 @@ export default function Team() {
             <button style={{ width: "100%", padding: 12, marginTop: 10, fontWeight: 800 }} onClick={createTeam}>
               Create team
             </button>
-            <div style={{ marginTop: 10, fontSize: 13, opacity: 0.7 }}>After creation you can invite people by email.</div>
+            <div style={{ marginTop: 10, fontSize: 13, opacity: 0.7 }}>
+              After creation you can invite people by email.
+            </div>
           </div>
         ) : (
           <>
@@ -445,7 +459,7 @@ export default function Team() {
               <div style={{ fontSize: 14, opacity: 0.8 }}>Pending invites</div>
               <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
                 {outgoingInvites
-                  .filter((i) => String(i.status || "").toUpperCase() === "PENDING")
+                  .filter((i) => String(i.status || "").toLowerCase() === "pending")
                   .map((i) => (
                     <div
                       key={i.id}
@@ -462,7 +476,10 @@ export default function Team() {
                       <div style={{ flex: "1 1 240px" }}>
                         <div style={{ fontWeight: 800 }}>{i.email || "Invite"}</div>
                         <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
-                          Token: <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>{i.token}</span>
+                          Token:{" "}
+                          <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+                            {i.token}
+                          </span>
                         </div>
                       </div>
 
@@ -472,7 +489,7 @@ export default function Team() {
                     </div>
                   ))}
 
-                {outgoingInvites.filter((i) => String(i.status || "").toUpperCase() === "PENDING").length === 0 && (
+                {outgoingInvites.filter((i) => String(i.status || "").toLowerCase() === "pending").length === 0 && (
                   <div style={{ opacity: 0.7 }}>No pending invites.</div>
                 )}
               </div>
