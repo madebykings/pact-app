@@ -200,7 +200,7 @@ export default function Leaderboard() {
         <h2 style={{ margin: 0 }}>Leaderboard</h2>
         <div style={{ display: "flex", gap: 8 }}>
           <a
-            href="/dashboard"
+            href="/team"
             style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}
           >
             Back
