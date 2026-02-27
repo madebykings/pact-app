@@ -62,7 +62,26 @@ export default function Team() {
       .maybeSingle();
     if (stErr) throw stErr;
 
-    setSettings(st || null);
+    // Normalize mode so the UI highlights correctly.
+    if (st?.team_id && st.mode !== "team") {
+      await supabase.from("user_settings").update({ mode: "team" }).eq("user_id", userId);
+      const { data: st2 } = await supabase
+        .from("user_settings")
+        .select("*")
+        .eq("user_id", userId)
+        .maybeSingle();
+      setSettings(st2 || st || null);
+    } else if (!st?.team_id && st?.mode === "team") {
+      await supabase.from("user_settings").update({ mode: "solo" }).eq("user_id", userId);
+      const { data: st2 } = await supabase
+        .from("user_settings")
+        .select("*")
+        .eq("user_id", userId)
+        .maybeSingle();
+      setSettings(st2 || st || null);
+    } else {
+      setSettings(st || null);
+    }
 
     const tid = st?.team_id || null;
 
@@ -180,7 +199,7 @@ export default function Team() {
       team_id: settings.team_id,
       email, // column is 'email'
       token,
-      status: "PENDING",
+      status: "pending",
       created_by: user.id, // column exists
       inviter_id: user.id, // keep for legacy/analytics
       expires_at: expiresAt,
@@ -208,7 +227,7 @@ export default function Team() {
 
     await supabase
       .from("team_invites")
-      .update({ status: "ACCEPTED", accepted_at: new Date().toISOString() })
+      .update({ status: "accepted", accepted_at: new Date().toISOString() })
       .eq("id", invite.id);
 
     const { error: sErr } = await supabase
@@ -229,7 +248,7 @@ export default function Team() {
       .from("team_invites")
       .select("*")
       .eq("token", token)
-      .eq("status", "PENDING")
+      .eq("status", "pending")
       .maybeSingle();
     if (invErr) return alert(invErr.message);
     if (!inv) return alert("Invite not found / already used");
@@ -400,7 +419,7 @@ export default function Team() {
           <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
             <div style={{ fontSize: 14, opacity: 0.8 }}>Pending invites</div>
             <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-              {outgoingInvites.filter((i) => i.status === "PENDING").map((i) => (
+              {outgoingInvites.filter((i) => (i.status || "").toLowerCase() === "pending").map((i) => (
                 <div key={i.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
                   <div style={{ fontWeight: 800 }}>{i.email || "Invite"}</div>
                   <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
@@ -408,7 +427,7 @@ export default function Team() {
                   </div>
                 </div>
               ))}
-              {outgoingInvites.filter((i) => i.status === "PENDING").length === 0 && (
+              {outgoingInvites.filter((i) => (i.status || "").toLowerCase() === "pending").length === 0 && (
                 <div style={{ opacity: 0.7 }}>No pending invites.</div>
               )}
             </div>
