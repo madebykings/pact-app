@@ -1,24 +1,8 @@
 // pages/week-plan.js
 import { useEffect, useMemo, useState } from "react";
+import TopNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
 import { addDays, isoDate } from "../lib/weekTemplate";
-
-function TopNav({ active, onLogout }) {
-  const linkStyle = (isActive) => ({
-    padding: "6px 10px",
-    border: "1px solid #ddd",
-    borderRadius: 10,
-    textDecoration: "none",
-    opacity: isActive ? 1 : 0.8,
-    fontWeight: isActive ? 800 : 600,
-  });
-
-  return (
-    <TopNav active="dashboard" onLogout={logout} />
-    </div>
-  );
-}
-
 
 const ALL_TYPES = [
   { value: "REST", label: "Rest day" },
@@ -51,22 +35,22 @@ export default function WeekPlan() {
   const [plans, setPlans] = useState([]);
   const [err, setErr] = useState("");
 
-  const todayStr = useMemo(() => isoDate(new Date()), []);
-
   const today = useMemo(() => new Date(), []);
-const weekStart = useMemo(() => {
-  const d = new Date(today);
-  const day = d.getDay(); // 0=Sun
-  const diff = day === 0 ? -6 : 1 - day; // Monday
-  d.setDate(d.getDate() + diff);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}, [today]);
+  const todayStr = useMemo(() => isoDate(today), [today]);
 
-const dates = useMemo(
-  () => Array.from({ length: 7 }).map((_, i) => isoDate(addDays(weekStart, i))),
-  [weekStart]
-);
+  const weekStart = useMemo(() => {
+    const d = new Date(today);
+    const day = d.getDay(); // 0=Sun
+    const diff = day === 0 ? -6 : 1 - day; // Monday
+    d.setDate(d.getDate() + diff);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }, [today]);
+
+  const dates = useMemo(
+    () => Array.from({ length: 7 }).map((_, i) => isoDate(addDays(weekStart, i))),
+    [weekStart]
+  );
 
   const allowedTypes = useMemo(() => {
     const inc = Array.isArray(settings?.included_activities) ? settings.included_activities : [];
@@ -164,6 +148,7 @@ const dates = useMemo(
   if (err) {
     return (
       <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
+      <TopNav active="dashboard" onLogout={logout} />
         <h2>Week plan</h2>
         <div><b>Error:</b> {err}</div>
         <button style={{ marginTop: 12 }} onClick={logout}>Logout</button>
@@ -196,7 +181,7 @@ const dates = useMemo(
             <div style={{ marginTop: 10, fontWeight: 900, fontSize: 14, opacity: 0.8 }}>Workout</div>
             <select
               value={p.plan_type}
-              disabled={!canEdit || p.plan_date < todayStr}
+              disabled={!canEdit}
               onChange={(e) => {
                 const nextType = e.target.value;
                 const patch = { plan_type: nextType };
@@ -211,17 +196,13 @@ const dates = useMemo(
             </select>
 
             <div style={{ marginTop: 12, fontWeight: 900, fontSize: 14, opacity: 0.8 }}>Time</div>
-            {p.plan_date < todayStr && (
-              <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>Past day — locked.</div>
-            )}
-
             {p.plan_type === "REST" ? (
               <div style={{ marginTop: 8, opacity: 0.75 }}>Rest day. No time required.</div>
             ) : (
               <input
                 type="time"
                 value={p.planned_time || ""}
-                disabled={!canEdit || p.plan_date < todayStr}
+                disabled={!canEdit}
                 onChange={(e) => setPlan(p.id, { planned_time: clampTime(e.target.value) })}
                 style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 8 }}
               />
