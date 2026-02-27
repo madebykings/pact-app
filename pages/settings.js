@@ -227,7 +227,9 @@ export default function Settings() {
       return;
     }
 
-    if ((res.reason || "").toLowerCase().includes("permission")) {
+    // Only show "blocked" copy when the browser is actually denied.
+    const perm = typeof Notification !== "undefined" ? Notification.permission : "default";
+    if (perm === "denied" || (res.reason || "").toLowerCase().includes("blocked/denied")) {
       alert("Push permission is blocked. Allow notifications for this site in your browser settings, then try again.");
       return;
     }
