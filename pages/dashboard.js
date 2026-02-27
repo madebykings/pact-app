@@ -1,3 +1,4 @@
+// pages/dashboard.js
 import { useEffect, useMemo, useState } from "react";
 import TopNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
@@ -50,9 +51,7 @@ async function ensureProfileRow(userId) {
   if (error) throw error;
 
   if (!existing) {
-    const { error: insErr } = await supabase
-      .from("user_profiles")
-      .insert({ user_id: userId, display_name: "" });
+    const { error: insErr } = await supabase.from("user_profiles").insert({ user_id: userId, display_name: "" });
     if (insErr) throw insErr;
   }
 }
@@ -135,7 +134,6 @@ export default function Dashboard() {
   }
 
   async function bootstrapDefaults(userId) {
-    // ✅ FIX: do NOT overwrite display_name each visit
     await ensureProfileRow(userId);
 
     // settings (create if missing, don't overwrite if exists)
@@ -147,7 +145,19 @@ export default function Dashboard() {
           timezone: "Europe/London",
           water_target_ml: 3000,
           sleep_target_hours: 8,
-          included_activities: ["WALK", "RUN", "SPIN", "SWIM", "HILLWALK", "WEIGHTS", "HIIT", "YOGA", "PILATES", "MOBILITY", "OTHER"],
+          included_activities: [
+            "WALK",
+            "RUN",
+            "SPIN",
+            "SWIM",
+            "HILLWALK",
+            "WEIGHTS",
+            "HIIT",
+            "YOGA",
+            "PILATES",
+            "MOBILITY",
+            "OTHER",
+          ],
         },
         { onConflict: "user_id", ignoreDuplicates: true }
       );
@@ -188,18 +198,12 @@ export default function Dashboard() {
       }
     }
 
-    // plans
     await ensurePlan(userId, today);
     await ensurePlan(userId, tomorrow);
 
     // supplements defaults
     {
-      const { data: existing, error: exErr } = await supabase
-        .from("supplements")
-        .select("id")
-        .eq("user_id", userId)
-        .limit(1);
-
+      const { data: existing, error: exErr } = await supabase.from("supplements").select("id").eq("user_id", userId).limit(1);
       if (exErr) throw exErr;
 
       if (!existing || existing.length === 0) {
@@ -245,13 +249,7 @@ export default function Dashboard() {
   }
 
   async function fetchPlan(userId, dateStr) {
-    const { data, error } = await supabase
-      .from("plans")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("plan_date", dateStr)
-      .maybeSingle();
-
+    const { data, error } = await supabase.from("plans").select("*").eq("user_id", userId).eq("plan_date", dateStr).maybeSingle();
     if (error) throw error;
     return data;
   }
@@ -259,16 +257,11 @@ export default function Dashboard() {
   async function refreshAll(userId) {
     // settings
     {
-      const { data: st, error: stErr } = await supabase
-        .from("user_settings")
-        .select("*")
-        .eq("user_id", userId)
-        .maybeSingle();
+      const { data: st, error: stErr } = await supabase.from("user_settings").select("*").eq("user_id", userId).maybeSingle();
       if (stErr) throw stErr;
       setSettings(st || null);
     }
 
-    // today + tomorrow
     setTodayPlan(await fetchPlan(userId, todayStr));
     setTomorrowPlan(await fetchPlan(userId, tomorrowStr));
 
@@ -287,12 +280,7 @@ export default function Dashboard() {
 
     // water
     {
-      const { data: w, error: wErr } = await supabase
-        .from("water_logs")
-        .select("*")
-        .eq("user_id", userId)
-        .eq("log_date", todayStr)
-        .maybeSingle();
+      const { data: w, error: wErr } = await supabase.from("water_logs").select("*").eq("user_id", userId).eq("log_date", todayStr).maybeSingle();
       if (wErr) throw wErr;
       setWater(w || null);
     }
@@ -300,24 +288,15 @@ export default function Dashboard() {
     // supplements (active only)
     let mySupps = [];
     {
-      const { data: s, error: sErr } = await supabase
-        .from("supplements")
-        .select("*")
-        .eq("user_id", userId)
-        .eq("active", true)
-        .order("name");
+      const { data: s, error: sErr } = await supabase.from("supplements").select("*").eq("user_id", userId).eq("active", true).order("name");
       if (sErr) throw sErr;
       mySupps = s || [];
       setSupps(mySupps);
     }
 
-    // supplement logs (today) — NO user_id column in schema
+    // supplement logs (today)
     {
-      const { data: logs, error: lErr } = await supabase
-        .from("supplement_logs")
-        .select("*")
-        .eq("log_date", todayStr);
-
+      const { data: logs, error: lErr } = await supabase.from("supplement_logs").select("*").eq("log_date", todayStr);
       if (lErr) throw lErr;
 
       const myIds = new Set(mySupps.map((s) => s.id));
@@ -330,17 +309,12 @@ export default function Dashboard() {
 
     // sleep
     {
-      const { data: sl, error: slErr } = await supabase
-        .from("sleep_logs")
-        .select("*")
-        .eq("user_id", userId)
-        .eq("log_date", todayStr)
-        .maybeSingle();
+      const { data: sl, error: slErr } = await supabase.from("sleep_logs").select("*").eq("user_id", userId).eq("log_date", todayStr).maybeSingle();
       if (slErr) throw slErr;
       setSleep(sl || null);
     }
 
-    // ✅ FIX: weigh-in should use weigh_date/weight_kg schema
+    // weigh-in
     {
       const { data: w, error: wErr } = await supabase
         .from("weigh_ins")
@@ -362,6 +336,7 @@ export default function Dashboard() {
       await logActivityEvent({
         userId: user.id,
         teamId: settings?.team_id || null,
+        planId: plan.id, // important for upsert
         eventType: "workout_done",
         points: 10,
         eventDate: plan.plan_date,
@@ -378,15 +353,13 @@ export default function Dashboard() {
   async function cancel(plan) {
     try {
       const reason = prompt("Reason (illness/work/family/couldn't be bothered)?") || "unspecified";
-      const { error } = await supabase
-        .from("plans")
-        .update({ status: "CANCELLED", cancel_reason: reason })
-        .eq("id", plan.id);
+      const { error } = await supabase.from("plans").update({ status: "CANCELLED", cancel_reason: reason }).eq("id", plan.id);
       if (error) throw error;
 
       await logActivityEvent({
         userId: user.id,
         teamId: settings?.team_id || null,
+        planId: plan.id, // important for upsert
         eventType: "workout_cancel",
         points: -5,
         eventDate: plan.plan_date,
@@ -408,6 +381,7 @@ export default function Dashboard() {
       await logActivityEvent({
         userId: user.id,
         teamId: settings?.team_id || null,
+        planId: plan.id, // important for upsert
         eventType: "undo_workout_done",
         points: -10,
         eventDate: plan.plan_date,
@@ -423,15 +397,13 @@ export default function Dashboard() {
 
   async function undoCancel(plan) {
     try {
-      const { error } = await supabase
-        .from("plans")
-        .update({ status: "PLANNED", cancel_reason: null })
-        .eq("id", plan.id);
+      const { error } = await supabase.from("plans").update({ status: "PLANNED", cancel_reason: null }).eq("id", plan.id);
       if (error) throw error;
 
       await logActivityEvent({
         userId: user.id,
         teamId: settings?.team_id || null,
+        planId: plan.id, // important for upsert
         eventType: "undo_workout_cancel",
         points: 5,
         eventDate: plan.plan_date,
@@ -464,6 +436,7 @@ export default function Dashboard() {
       await logActivityEvent({
         userId: user.id,
         teamId: settings?.team_id || null,
+        planId: tomorrowPlan.id,
         eventType: "set_tomorrow_time",
         points: t ? 3 : -3,
         eventDate: tomorrowPlan.plan_date,
@@ -537,17 +510,10 @@ export default function Dashboard() {
       const taken = !!takenMap[supplementId];
 
       if (taken) {
-        const { error } = await supabase
-          .from("supplement_logs")
-          .delete()
-          .eq("supplement_id", supplementId)
-          .eq("log_date", todayStr);
+        const { error } = await supabase.from("supplement_logs").delete().eq("supplement_id", supplementId).eq("log_date", todayStr);
         if (error) throw error;
       } else {
-        const { error } = await supabase.from("supplement_logs").insert({
-          supplement_id: supplementId,
-          log_date: todayStr,
-        });
+        const { error } = await supabase.from("supplement_logs").insert({ supplement_id: supplementId, log_date: todayStr });
         if (error) throw error;
       }
 
@@ -560,11 +526,7 @@ export default function Dashboard() {
 
   async function updateSleepField(field, value) {
     try {
-      const { error } = await supabase
-        .from("sleep_logs")
-        .update({ [field]: value })
-        .eq("user_id", user.id)
-        .eq("log_date", todayStr);
+      const { error } = await supabase.from("sleep_logs").update({ [field]: value }).eq("user_id", user.id).eq("log_date", todayStr);
       if (error) throw error;
 
       const nextSleep = { ...(sleep || {}), [field]: value };
@@ -586,7 +548,6 @@ export default function Dashboard() {
     }
   }
 
-  // ✅ FIX: weigh_ins columns are weigh_date + weight_kg (NOT kg)
   async function addWeighIn(kgVal) {
     try {
       const kg = Number(kgVal);
@@ -609,9 +570,7 @@ export default function Dashboard() {
     return (
       <div style={{ padding: 20, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
         <h2>Pact</h2>
-        <p>
-          <b>Error:</b> {errMsg}
-        </p>
+        <p><b>Error:</b> {errMsg}</p>
         <button onClick={logout}>Logout</button>
       </div>
     );
@@ -698,24 +657,6 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* WEEK PLAN CTA */}
-      <div style={{ marginTop: 14 }}>
-        <a
-          href="/week-plan"
-          style={{
-            display: "block",
-            padding: 12,
-            border: "1px solid #ddd",
-            borderRadius: 12,
-            textAlign: "center",
-            textDecoration: "none",
-            fontWeight: 800,
-          }}
-        >
-          Edit week plan
-        </a>
-      </div>
-
       {/* UPCOMING vs COMPLETED */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ display: "flex", gap: 10 }}>
@@ -791,9 +732,7 @@ export default function Dashboard() {
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Sleep (last night) — target {sleepTargetHours}h</div>
 
-        {slept != null && (
-          <div style={{ marginTop: 10, fontSize: 22, fontWeight: 800 }}>{slept.toFixed(1)}h</div>
-        )}
+        {slept != null && <div style={{ marginTop: 10, fontSize: 22, fontWeight: 800 }}>{slept.toFixed(1)}h</div>}
 
         <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
           <div>
