@@ -35,7 +35,18 @@ export default function WeekPlan() {
   const [err, setErr] = useState("");
 
   const start = useMemo(() => new Date(), []);
-  const dates = useMemo(() => Array.from({ length: 7 }).map((_, i) => isoDate(addDays(start, i))), [start]);
+  const daysCount = useMemo(() => {
+    const d = new Date(start);
+    const dow = d.getDay(); // 0=Sun
+    // show from today up to and including Sunday
+    if (dow === 0) return 1;
+    return (7 - dow) + 1;
+  }, [start]);
+
+  const dates = useMemo(
+    () => Array.from({ length: daysCount }).map((_, i) => isoDate(addDays(start, i))),
+    [start, daysCount]
+  );
 
   const allowedTypes = useMemo(() => {
     const inc = Array.isArray(settings?.included_activities) ? settings.included_activities : [];
@@ -144,11 +155,15 @@ export default function WeekPlan() {
 
   return (
     <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h2 style={{ margin: 0 }}>Week plan</h2>
-        <a href="/dashboard" style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}>
-          Back
-        </a>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+        <h2 style={{ margin: 0 }}>Pact</h2>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <a href="/dashboard" style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none", opacity: 1, fontWeight: 800 }}>Dashboard</a>
+          <a href="/team" style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none", opacity: 0.8, fontWeight: 600 }}>Pact</a>
+          <a href="/profile" style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none", opacity: 0.8, fontWeight: 600 }}>Profile</a>
+          <a href="/settings" style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none", opacity: 0.8, fontWeight: 600 }}>Settings</a>
+          <button onClick={logout}>Logout</button>
+        </div>
       </div>
 
       {settings.mode === "team" && (
@@ -197,3 +212,14 @@ export default function WeekPlan() {
     </div>
   );
 }
+      <div style={{ marginTop: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+        <div>
+          <div style={{ fontSize: 14, opacity: 0.75 }}>Workout planning</div>
+          <div style={{ fontSize: 22, fontWeight: 900 }}>Edit week plan</div>
+        </div>
+        <a href="/dashboard" style={{ padding: "10px 12px", border: "1px solid #ddd", borderRadius: 12, textDecoration: "none", fontWeight: 800 }}>
+          Back
+        </a>
+      </div>
+
+
