@@ -71,11 +71,11 @@ export default function Profile() {
 
     // points this week
     const { data: pts, error: ptsErr } = await supabase
-      .from("points_events")
-      .select("points,created_at")
+      .from("activity_events")
+      .select("points,event_date")
       .eq("user_id", userId)
-      .gte("created_at", weekStart.toISOString())
-      .lt("created_at", weekEnd.toISOString());
+      .gte("event_date", isoDay(weekStart))
+      .lt("event_date", isoDay(weekEnd));
     if (!ptsErr) {
       const total = (pts || []).reduce((sum, r) => sum + Number(r.points || 0), 0);
       setWeekPoints(total);
@@ -98,8 +98,7 @@ export default function Profile() {
     // IMPORTANT: don't touch columns that may not exist (e.g. updated_at)
     const { error } = await supabase
       .from("user_profiles")
-      .update({ display_name: name })
-      .eq("user_id", user.id);
+      .upsert({ user_id: user.id, display_name: name }, { onConflict: "user_id" });
     setSaving(false);
     if (error) alert(error.message);
     await refresh(user.id);
