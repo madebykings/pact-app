@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 
-const MODE_OPTIONS = [
+const TONE_OPTIONS = [
   { value: "normal", label: "Normal" },
   { value: "brutal", label: "Brutal" },
   { value: "savage", label: "Savage" },
@@ -22,8 +22,7 @@ const ACTIVITY_OPTIONS = [
 
 function normalizeTime(t) {
   if (!t) return "";
-  // Ensure HH:MM
-  const m = /^(\d{1,2}):(\d{2})$/.exec(t.trim());
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(t).trim());
   if (!m) return "";
   const hh = String(Math.max(0, Math.min(23, Number(m[1])))).padStart(2, "0");
   const mm = String(Math.max(0, Math.min(59, Number(m[2])))).padStart(2, "0");
@@ -34,8 +33,7 @@ export default function Settings() {
   const [user, setUser] = useState(null);
   const [settings, setSettings] = useState(null);
   const [supps, setSupps] = useState([]);
-  const [errMsg, setErrMsg] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
 
   const [newSuppName, setNewSuppName] = useState("");
 
@@ -50,11 +48,11 @@ export default function Settings() {
         }
         setUser(data.user);
 
-        // ensure settings row exists
         await supabase.from("user_settings").upsert(
           {
             user_id: data.user.id,
-            mode: "normal",
+            mode: "solo",
+            tone_mode: "normal",
             water_target_ml: 3000,
             sleep_target_hours: 8,
             reminder_times: ["08:00", "12:00", "18:00"],
@@ -66,7 +64,7 @@ export default function Settings() {
 
         await refresh(data.user.id);
       } catch (e) {
-        setErrMsg(e?.message || String(e));
+        setErr(e?.message || String(e));
       }
     })();
   }, []);
@@ -78,7 +76,7 @@ export default function Settings() {
       .eq("user_id", userId)
       .maybeSingle();
     if (stErr) throw stErr;
-    setSettings(st);
+    setSettings(st || null);
 
     const { data: s, error: sErr } = await supabase
       .from("supplements")
@@ -89,37 +87,22 @@ export default function Settings() {
     setSupps(s || []);
   }
 
-  async function saveSettings(patch) {
+  async function save(patch) {
     if (!user) return;
-    setSaving(true);
-    try {
-      const next = { ...(settings || {}), ...patch };
-      const { error } = await supabase
-        .from("user_settings")
-        .update(next)
-        .eq("user_id", user.id);
-      if (error) throw error;
-      await refresh(user.id);
-    } catch (e) {
-      alert(e?.message || String(e));
-    } finally {
-      setSaving(false);
-    }
+    const { error } = await supabase
+      .from("user_settings")
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq("user_id", user.id);
+    if (error) alert(error.message);
+    await refresh(user.id);
   }
 
-  function toggleActivity(code) {
-    const set = new Set(settings?.included_activities || []);
-    if (set.has(code)) set.delete(code);
-    else set.add(code);
-    saveSettings({ included_activities: Array.from(set) });
-  }
-
-  async function toggleSupplementActive(supp) {
+  async function toggleSupplementActive(s) {
     if (!user) return;
     const { error } = await supabase
       .from("supplements")
-      .update({ active: !supp.active, updated_at: new Date().toISOString() })
-      .eq("id", supp.id);
+      .update({ active: !s.active, updated_at: new Date().toISOString() })
+      .eq("id", s.id);
     if (error) alert(error.message);
     await refresh(user.id);
   }
@@ -128,7 +111,6 @@ export default function Settings() {
     if (!user) return;
     const name = newSuppName.trim();
     if (!name) return;
-
     const { error } = await supabase.from("supplements").insert({
       user_id: user.id,
       name,
@@ -136,7 +118,6 @@ export default function Settings() {
       rule_type: "ANYTIME",
     });
     if (error) alert(error.message);
-
     setNewSuppName("");
     await refresh(user.id);
   }
@@ -146,21 +127,22 @@ export default function Settings() {
     window.location.href = "/";
   }
 
-  if (errMsg) {
+  if (err) {
     return (
-      <div style={{ padding: 20, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
+      <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
         <h2>Settings</h2>
-        <p><b>Error:</b> {errMsg}</p>
-        <button onClick={logout}>Logout</button>
+        <div><b>Error:</b> {err}</div>
+        <button style={{ marginTop: 12 }} onClick={logout}>Logout</button>
       </div>
     );
   }
 
   if (!settings) {
-    return <div style={{ padding: 20, fontFamily: "system-ui" }}>Loading…</div>;
+    return <div style={{ padding: 18, fontFamily: "system-ui" }}>Loading…</div>;
   }
 
-  const reminderTimes = Array.isArray(settings.reminder_times) ? settings.reminder_times : ["08:00", "12:00", "18:00"];
+  const times = Array.isArray(settings.reminder_times) ? settings.reminder_times : ["08:00", "12:00", "18:00"];
+  const included = new Set(settings.included_activities || []);
 
   return (
     <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
@@ -171,36 +153,57 @@ export default function Settings() {
         </a>
       </div>
 
-      {/* MODE */}
+      {/* SOLO / TEAM MODE (existing behaviour) */}
+      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Mode</div>
+        <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+          <button
+            style={{ flex: 1, padding: 12, fontWeight: 800, opacity: settings.mode === "solo" ? 1 : 0.5 }}
+            onClick={() => save({ mode: "solo" })}
+          >
+            Solo
+          </button>
+          <button
+            style={{ flex: 1, padding: 12, fontWeight: 800, opacity: settings.mode === "team" ? 1 : 0.5 }}
+            onClick={() => save({ mode: "team" })}
+          >
+            Team
+          </button>
+        </div>
+
+        {settings.mode === "team" && (
+          <div style={{ marginTop: 10 }}>
+            <a href="/team" style={{ textDecoration: "none" }}>Manage team / invite</a>
+          </div>
+        )}
+      </div>
+
+      {/* TONE MODE */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Tone</div>
         <select
-          value={settings.mode || "normal"}
-          onChange={(e) => saveSettings({ mode: e.target.value })}
+          value={settings.tone_mode || "normal"}
+          onChange={(e) => save({ tone_mode: e.target.value })}
           style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 8 }}
-          disabled={saving}
         >
-          {MODE_OPTIONS.map((m) => (
-            <option key={m.value} value={m.value}>{m.label}</option>
+          {TONE_OPTIONS.map((t) => (
+            <option key={t.value} value={t.value}>{t.label}</option>
           ))}
         </select>
-        <div style={{ marginTop: 8, fontSize: 13, opacity: 0.7 }}>
-          Normal = supportive. Brutal/Savage = harsher reminders + stronger language.
-        </div>
       </div>
 
-      {/* WATER TARGET */}
+      {/* WATER */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Water target (ml)</div>
         <input
           type="number"
           value={settings.water_target_ml ?? 3000}
-          onChange={(e) => saveSettings({ water_target_ml: Number(e.target.value || 0) })}
+          onChange={(e) => save({ water_target_ml: Number(e.target.value || 0) })}
           style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 8 }}
         />
       </div>
 
-      {/* SLEEP TARGET */}
+      {/* SLEEP */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Sleep target (hours)</div>
         <input
@@ -208,7 +211,7 @@ export default function Settings() {
           min="4"
           max="12"
           value={settings.sleep_target_hours ?? 8}
-          onChange={(e) => saveSettings({ sleep_target_hours: Number(e.target.value || 8) })}
+          onChange={(e) => save({ sleep_target_hours: Number(e.target.value || 8) })}
           style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 8 }}
         />
       </div>
@@ -217,19 +220,19 @@ export default function Settings() {
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>Reminder times</div>
         <div style={{ fontSize: 13, opacity: 0.7, marginTop: 6 }}>
-          These are used for push notifications (water / “set tomorrow time” / “I’m in”).
+          Used for push reminders (once we schedule them).
         </div>
 
         <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-          {reminderTimes.map((t, idx) => (
+          {times.map((t, idx) => (
             <input
               key={idx}
               type="time"
               value={normalizeTime(t)}
               onChange={(e) => {
-                const next = [...reminderTimes];
+                const next = [...times];
                 next[idx] = e.target.value;
-                saveSettings({ reminder_times: next });
+                save({ reminder_times: next });
               }}
               style={{ width: "100%", padding: 12, fontSize: 16 }}
             />
@@ -238,7 +241,7 @@ export default function Settings() {
 
         <button
           style={{ width: "100%", padding: 12, marginTop: 10 }}
-          onClick={() => saveSettings({ reminder_times: [...reminderTimes, "18:00"] })}
+          onClick={() => save({ reminder_times: [...times, "18:00"] })}
         >
           + Add reminder time
         </button>
@@ -249,11 +252,16 @@ export default function Settings() {
         <div style={{ fontSize: 14, opacity: 0.8 }}>Allowed workout types</div>
         <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
           {ACTIVITY_OPTIONS.map((a) => {
-            const on = (settings.included_activities || []).includes(a.value);
+            const on = included.has(a.value);
             return (
               <button
                 key={a.value}
-                onClick={() => toggleActivity(a.value)}
+                onClick={() => {
+                  const next = new Set(included);
+                  if (next.has(a.value)) next.delete(a.value);
+                  else next.add(a.value);
+                  save({ included_activities: Array.from(next) });
+                }}
                 style={{
                   padding: 12,
                   textAlign: "left",
@@ -307,11 +315,9 @@ export default function Settings() {
         </div>
       </div>
 
-      <div style={{ marginTop: 14 }}>
-        <button style={{ width: "100%", padding: 12 }} onClick={logout}>
-          Logout
-        </button>
-      </div>
+      <button style={{ width: "100%", padding: 12, marginTop: 14 }} onClick={logout}>
+        Logout
+      </button>
     </div>
   );
 }
