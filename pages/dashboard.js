@@ -1,4 +1,3 @@
-// pages/dashboard.js
 import { useEffect, useMemo, useState } from "react";
 import TopNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
@@ -40,6 +39,22 @@ function calcSleepHours(bedTime, wakeTime) {
   if (wake <= bed) wake += 24 * 60;
 
   return (wake - bed) / 60;
+}
+
+async function ensureProfileRow(userId) {
+  const { data: existing, error } = await supabase
+    .from("user_profiles")
+    .select("user_id")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw error;
+
+  if (!existing) {
+    const { error: insErr } = await supabase
+      .from("user_profiles")
+      .insert({ user_id: userId, display_name: "" });
+    if (insErr) throw insErr;
+  }
 }
 
 export default function Dashboard() {
@@ -120,13 +135,8 @@ export default function Dashboard() {
   }
 
   async function bootstrapDefaults(userId) {
-    // profile
-    {
-      const { error } = await supabase
-        .from("user_profiles")
-        .upsert({ user_id: userId, display_name: "" }, { onConflict: "user_id" });
-      if (error) throw error;
-    }
+    // ✅ FIX: do NOT overwrite display_name each visit
+    await ensureProfileRow(userId);
 
     // settings (create if missing, don't overwrite if exists)
     {
@@ -137,18 +147,7 @@ export default function Dashboard() {
           timezone: "Europe/London",
           water_target_ml: 3000,
           sleep_target_hours: 8,
-          included_activities: [
-            "WALK",
-            "RUN",
-            "SPIN",
-            "SWIM",
-            "HILLWALK",
-            "WEIGHTS",
-            "HIIT",
-            "YOGA",
-            "PILATES",
-            "OTHER",
-          ],
+          included_activities: ["WALK", "RUN", "SPIN", "SWIM", "HILLWALK", "WEIGHTS", "HIIT", "YOGA", "PILATES", "MOBILITY", "OTHER"],
         },
         { onConflict: "user_id", ignoreDuplicates: true }
       );
@@ -215,7 +214,7 @@ export default function Dashboard() {
           { name: "Magnesium", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
           { name: "ZMA", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
           { name: "B12 Coffee", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
-        ].map((s) => ({ ...s, user_id: userId, points: 0, active: true }));
+        ].map((s) => ({ ...s, user_id: userId, active: true }));
 
         const { error: insErr } = await supabase.from("supplements").insert(defaults);
         if (insErr) throw insErr;
@@ -239,7 +238,6 @@ export default function Dashboard() {
           log_date: todayStr,
           bed_time: null,
           wake_time: null,
-          quality: 0,
         });
         if (insErr) throw insErr;
       }
@@ -299,7 +297,7 @@ export default function Dashboard() {
       setWater(w || null);
     }
 
-    // supplements
+    // supplements (active only)
     let mySupps = [];
     {
       const { data: s, error: sErr } = await supabase
@@ -313,7 +311,7 @@ export default function Dashboard() {
       setSupps(mySupps);
     }
 
-    // supplement logs (today) — NO user_id column in your schema
+    // supplement logs (today) — NO user_id column in schema
     {
       const { data: logs, error: lErr } = await supabase
         .from("supplement_logs")
@@ -342,17 +340,17 @@ export default function Dashboard() {
       setSleep(sl || null);
     }
 
-    // weigh-in
+    // ✅ FIX: weigh-in should use weigh_date/weight_kg schema
     {
       const { data: w, error: wErr } = await supabase
         .from("weigh_ins")
-        .select("*")
+        .select("id,user_id,weigh_date,weight_kg")
         .eq("user_id", userId)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .order("weigh_date", { ascending: false })
+        .limit(1);
+
       if (wErr) throw wErr;
-      setWeighIn(w || null);
+      setWeighIn(w?.[0] || null);
     }
   }
 
@@ -501,7 +499,7 @@ export default function Dashboard() {
       }
       if (err) throw err;
 
-      // Award when hitting target (best-effort; duplicates are ok/ignored if constrained)
+      const waterTargetMl = settings?.water_target_ml || 3000;
       if (next >= waterTargetMl) {
         await logActivityEvent({
           userId: user.id,
@@ -534,7 +532,6 @@ export default function Dashboard() {
     return "";
   }
 
-  // ✅ FIX: no user_id column
   async function tickSupplement(supplementId) {
     try {
       const taken = !!takenMap[supplementId];
@@ -589,13 +586,18 @@ export default function Dashboard() {
     }
   }
 
+  // ✅ FIX: weigh_ins columns are weigh_date + weight_kg (NOT kg)
   async function addWeighIn(kgVal) {
     try {
       const kg = Number(kgVal);
       if (!Number.isFinite(kg) || kg <= 0) return alert("Enter a valid weight in kg");
 
-      const { error } = await supabase.from("weigh_ins").insert({ user_id: user.id, kg });
+      const { error } = await supabase.from("weigh_ins").upsert(
+        { user_id: user.id, weigh_date: todayStr, weight_kg: kg },
+        { onConflict: "user_id,weigh_date" }
+      );
       if (error) throw error;
+
       await refreshAll(user.id);
     } catch (e) {
       console.warn(e);
@@ -813,18 +815,6 @@ export default function Dashboard() {
               style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 8 }}
             />
           </div>
-
-          <div>
-            <div style={{ fontSize: 14, opacity: 0.8 }}>Quality (0–10)</div>
-            <input
-              type="number"
-              min="0"
-              max="10"
-              value={sleep?.quality ?? 0}
-              onChange={(e) => updateSleepField("quality", Number(e.target.value || 0))}
-              style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 8 }}
-            />
-          </div>
         </div>
       </div>
 
@@ -834,10 +824,8 @@ export default function Dashboard() {
         <div style={{ marginTop: 8 }}>
           {weighIn ? (
             <div style={{ fontWeight: 800 }}>
-              {weighIn.weight ?? weighIn.kg ?? "—"}{" "}
-              <span style={{ opacity: 0.7, fontWeight: 500, fontSize: 13 }}>
-                {weighIn.created_at ? new Date(weighIn.created_at).toLocaleString() : ""}
-              </span>
+              {weighIn.weight_kg}kg{" "}
+              <span style={{ opacity: 0.7, fontWeight: 500, fontSize: 13 }}>{weighIn.weigh_date}</span>
             </div>
           ) : (
             <div style={{ opacity: 0.7 }}>No weigh-in yet — add your starting point.</div>
