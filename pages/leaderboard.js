@@ -1,6 +1,23 @@
 // pages/leaderboard.js
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
+
+function TopNav({ active, onLogout }) {
+  const linkStyle = (isActive) => ({
+    padding: "6px 10px",
+    border: "1px solid #ddd",
+    borderRadius: 10,
+    textDecoration: "none",
+    opacity: isActive ? 1 : 0.8,
+    fontWeight: isActive ? 800 : 600,
+  });
+
+  return (
+    <TopNav active="pact" onLogout={logout} />
+    </div>
+  );
+}
+
 import { addDays, isoDate } from "../lib/weekTemplate";
 
 function mondayStart(d) {
@@ -138,7 +155,6 @@ export default function Leaderboard() {
               sleep: 0,
               water: 0,
               plan_time: 0,
-              undo: 0,
             });
           }
           const r = byUser.get(uid);
@@ -151,7 +167,6 @@ export default function Leaderboard() {
           else if (e.event_type === "sleep_hit_target") r.sleep += pts;
           else if (e.event_type === "water_hit_target") r.water += pts;
           else if (e.event_type === "set_tomorrow_time") r.plan_time += pts;
-          else if (String(e.event_type || "").startsWith("undo_")) r.undo += pts;
         });
 
         // Ensure all members appear even with 0 points
@@ -167,7 +182,6 @@ export default function Leaderboard() {
             sleep: 0,
             water: 0,
             plan_time: 0,
-            undo: 0,
           }),
         }));
 
@@ -197,28 +211,19 @@ export default function Leaderboard() {
   return (
     <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-        <h2 style={{ margin: 0 }}>Pact</h2>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-          <a href="/dashboard" style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none", opacity: 0.8, fontWeight: 600 }}>Dashboard</a>
-          <a href="/team" style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none", opacity: 1, fontWeight: 800 }}>Pact</a>
-          <a href="/profile" style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none", opacity: 0.8, fontWeight: 600 }}>Profile</a>
-          <a href="/settings" style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none", opacity: 0.8, fontWeight: 600 }}>Settings</a>
+        <h2 style={{ margin: 0 }}>Leaderboard</h2>
+        <div style={{ display: "flex", gap: 8 }}>
+          <a
+            href="/team"
+            style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}
+          >
+            Back
+          </a>
           <button onClick={logout}>Logout</button>
         </div>
       </div>
 
-      
-      <div style={{ marginTop: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-        <div>
-          <div style={{ fontSize: 14, opacity: 0.75 }}>Team leaderboard</div>
-          <div style={{ fontSize: 22, fontWeight: 900 }}>Leaderboard</div>
-        </div>
-        <a href="/team" style={{ padding: "10px 12px", border: "1px solid #ddd", borderRadius: 12, textDecoration: "none", fontWeight: 800 }}>
-          Back
-        </a>
-      </div>
-
-{err && (
+      {err && (
         <div style={{ marginTop: 12, padding: 12, border: "1px solid #f2c", borderRadius: 12 }}>
           <b>Error:</b> {err}
         </div>
@@ -278,7 +283,6 @@ export default function Leaderboard() {
                       <span>WATER: <b>{r.water}</b></span>
                       <span>SLEEP: <b>{r.sleep}</b></span>
                       <span>CANCEL: <b>{r.cancel}</b></span>
-                      <span>UNDO: <b>{r.undo}</b></span>
                     </div>
                   </div>
                 );
@@ -294,9 +298,7 @@ export default function Leaderboard() {
               • Set tomorrow time (first time): <b>+3</b><br />
               • Hit water target: <b>+3</b><br />
               • Hit sleep target: <b>+3</b><br />
-              • Cancel: <b>-5</b><br />
-              
-            </div>
+              • Cancel: <b>-5</b><br />            </div>
           </div>
         </>
       )}
