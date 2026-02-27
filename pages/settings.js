@@ -1,3 +1,4 @@
+// pages/settings.js
 import { useEffect, useMemo, useRef, useState } from "react";
 import TopNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
@@ -79,9 +80,7 @@ async function ensureProfileRow(userId) {
   if (error) throw error;
 
   if (!existing) {
-    const { error: insErr } = await supabase
-      .from("user_profiles")
-      .insert({ user_id: userId, display_name: "" });
+    const { error: insErr } = await supabase.from("user_profiles").insert({ user_id: userId, display_name: "" });
     if (insErr) throw insErr;
   }
 }
@@ -89,11 +88,9 @@ async function ensureProfileRow(userId) {
 export default function Settings() {
   const [user, setUser] = useState(null);
   const [settings, setSettings] = useState(null);
-  const [profile, setProfile] = useState(null);
   const [supps, setSupps] = useState([]);
   const [err, setErr] = useState("");
 
-  // target weight draft + debounce (stops “buggy while typing”)
   const [targetDraft, setTargetDraft] = useState("");
   const targetTimer = useRef(null);
 
@@ -133,27 +130,12 @@ export default function Settings() {
   }, []);
 
   async function refresh(userId) {
-    const { data: st, error: stErr } = await supabase
-      .from("user_settings")
-      .select("*")
-      .eq("user_id", userId)
-      .maybeSingle();
+    const { data: st, error: stErr } = await supabase.from("user_settings").select("*").eq("user_id", userId).maybeSingle();
     if (stErr) throw stErr;
     setSettings(st || null);
     setTargetDraft(st?.target_weight_kg ?? "");
 
-    const { data: p, error: pErr } = await supabase
-      .from("user_profiles")
-      .select("*")
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (!pErr) setProfile(p || null);
-
-    const { data: s, error: sErr } = await supabase
-      .from("supplements")
-      .select("*")
-      .eq("user_id", userId)
-      .order("name");
+    const { data: s, error: sErr } = await supabase.from("supplements").select("*").eq("user_id", userId).order("name");
     if (!sErr) setSupps(s || []);
   }
 
@@ -183,10 +165,7 @@ export default function Settings() {
 
     const s = String(val ?? "").trim();
     if (s === "") {
-      const { error } = await supabase
-        .from("user_settings")
-        .update({ target_weight_kg: null })
-        .eq("user_id", user.id);
+      const { error } = await supabase.from("user_settings").update({ target_weight_kg: null }).eq("user_id", user.id);
       if (error) alert(error.message);
       await refresh(user.id);
       return;
@@ -194,15 +173,9 @@ export default function Settings() {
 
     const n = Number(s);
     if (!Number.isFinite(n)) return;
+    if (n < 30 || n > 250) return; // DB constraint
 
-    // respect your DB check constraint (30–250)
-    if (n < 30 || n > 250) return;
-
-    const { error } = await supabase
-      .from("user_settings")
-      .update({ target_weight_kg: n })
-      .eq("user_id", user.id);
-
+    const { error } = await supabase.from("user_settings").update({ target_weight_kg: n }).eq("user_id", user.id);
     if (error) {
       alert(error.message);
       await refresh(user.id);
@@ -223,11 +196,12 @@ export default function Settings() {
   async function subscribePush() {
     if (!user) return;
 
+    const permBefore = typeof Notification !== "undefined" ? Notification.permission : "default";
+
     const res = await enablePush();
 
     if (res.ok && res.id) {
-      // ✅ FIX: your unique is (user_id, onesignal_player_id) so onConflict:"user_id" is wrong.
-      // easiest: keep 1 device per user by delete+insert
+      // keep 1 device per user
       await supabase.from("push_devices").delete().eq("user_id", user.id);
       const { error } = await supabase.from("push_devices").insert({
         user_id: user.id,
@@ -245,13 +219,19 @@ export default function Settings() {
       return;
     }
 
-    const perm = typeof Notification !== "undefined" ? Notification.permission : "default";
-    if (perm === "denied" || (res.reason || "").toLowerCase().includes("blocked/denied")) {
-      alert("Push permission is blocked. Allow notifications for this site in your browser settings, then try again.");
+    const permAfter = typeof Notification !== "undefined" ? Notification.permission : "default";
+
+    if (permAfter === "denied" || permBefore === "denied") {
+      alert("Push is blocked. Allow notifications for this site in your browser settings, then try again.");
       return;
     }
 
-    alert(res.reason || "Push not enabled (no player id returned)");
+    if (permAfter === "default") {
+      alert("You dismissed the browser prompt (or it didn’t show). Click Enable again and accept. If no prompt appears, check site notification settings.");
+      return;
+    }
+
+    alert(res.reason || "Push not enabled.");
   }
 
   async function logout() {
@@ -265,9 +245,7 @@ export default function Settings() {
         <TopNav active="settings" onLogout={logout} />
         <div style={{ padding: 18, maxWidth: 980, margin: "0 auto" }}>
           <h1 style={{ margin: "0 0 14px" }}>Settings</h1>
-          <div>
-            <b>Error:</b> {err}
-          </div>
+          <div><b>Error:</b> {err}</div>
         </div>
       </div>
     );
@@ -289,7 +267,7 @@ export default function Settings() {
       <div style={{ padding: 18, maxWidth: 980, margin: "0 auto" }}>
         <h1 style={{ margin: "0 0 14px" }}>Settings</h1>
 
-        {/* Tone (DB column: tone) */}
+        {/* Tone */}
         <div style={{ padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12, marginBottom: 16 }}>
           <div style={{ fontSize: 14, opacity: 0.8 }}>Tone</div>
           <select
@@ -431,7 +409,7 @@ export default function Settings() {
             Enable push
           </button>
           <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
-            If permission stays “default”, the browser prompt was dismissed — click again and accept.
+            If you don’t see a prompt, it was dismissed or blocked — browser settings control this.
           </div>
         </div>
       </div>
