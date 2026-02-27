@@ -1,23 +1,7 @@
 // pages/leaderboard.js
 import { useEffect, useMemo, useState } from "react";
+import TopNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
-
-function TopNav({ active, onLogout }) {
-  const linkStyle = (isActive) => ({
-    padding: "6px 10px",
-    border: "1px solid #ddd",
-    borderRadius: 10,
-    textDecoration: "none",
-    opacity: isActive ? 1 : 0.8,
-    fontWeight: isActive ? 800 : 600,
-  });
-
-  return (
-    <TopNav active="pact" onLogout={logout} />
-    </div>
-  );
-}
-
 import { addDays, isoDate } from "../lib/weekTemplate";
 
 function mondayStart(d) {
@@ -155,6 +139,7 @@ export default function Leaderboard() {
               sleep: 0,
               water: 0,
               plan_time: 0,
+              undo: 0,
             });
           }
           const r = byUser.get(uid);
@@ -167,6 +152,7 @@ export default function Leaderboard() {
           else if (e.event_type === "sleep_hit_target") r.sleep += pts;
           else if (e.event_type === "water_hit_target") r.water += pts;
           else if (e.event_type === "set_tomorrow_time") r.plan_time += pts;
+          else if (String(e.event_type || "").startsWith("undo_")) r.undo += pts;
         });
 
         // Ensure all members appear even with 0 points
@@ -182,6 +168,7 @@ export default function Leaderboard() {
             sleep: 0,
             water: 0,
             plan_time: 0,
+            undo: 0,
           }),
         }));
 
@@ -210,6 +197,7 @@ export default function Leaderboard() {
 
   return (
     <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
+      <TopNav active="pact" onLogout={logout} />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
         <h2 style={{ margin: 0 }}>Leaderboard</h2>
         <div style={{ display: "flex", gap: 8 }}>
@@ -283,6 +271,7 @@ export default function Leaderboard() {
                       <span>WATER: <b>{r.water}</b></span>
                       <span>SLEEP: <b>{r.sleep}</b></span>
                       <span>CANCEL: <b>{r.cancel}</b></span>
+                      <span>UNDO: <b>{r.undo}</b></span>
                     </div>
                   </div>
                 );
@@ -298,7 +287,9 @@ export default function Leaderboard() {
               • Set tomorrow time (first time): <b>+3</b><br />
               • Hit water target: <b>+3</b><br />
               • Hit sleep target: <b>+3</b><br />
-              • Cancel: <b>-5</b><br />            </div>
+              • Cancel: <b>-5</b><br />
+              • Undo done: <b>-10</b>
+            </div>
           </div>
         </>
       )}
