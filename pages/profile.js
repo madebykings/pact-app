@@ -20,14 +20,40 @@ function isoDay(d) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function TopNav({ active, onLogout }) {
+  const linkStyle = (isActive) => ({
+    padding: "6px 10px",
+    border: "1px solid #ddd",
+    borderRadius: 10,
+    textDecoration: "none",
+    opacity: isActive ? 1 : 0.8,
+    fontWeight: isActive ? 800 : 600,
+  });
+
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+      <h2 style={{ margin: 0 }}>Pact</h2>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+        <a href="/dashboard" style={linkStyle(active === "dashboard")}>Dashboard</a>
+        <a href="/team" style={linkStyle(active === "pact")}>Pact</a>
+        <a href="/settings" style={linkStyle(active === "settings")}>Settings</a>
+        <button onClick={onLogout}>Logout</button>
+      </div>
+    </div>
+  );
+}
+
 export default function Profile() {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
+  const [nameInput, setNameInput] = useState("");
   const [weekPoints, setWeekPoints] = useState(0);
   const [weekDoneCount, setWeekDoneCount] = useState(0);
-  const [err, setErr] = useState("");
-  const [draftName, setDraftName] = useState("");
-  const [saving, setSaving] = useState(false);
+
+  const [latestWeight, setLatestWeight] = useState(null);
+  const [weightDelta, setWeightDelta] = useState(null);
+
+  const [errMsg, setErrMsg] = useState("");
 
   const now = useMemo(() => new Date(), []);
   const weekStart = useMemo(() => startOfWeek(now), [now]);
@@ -48,13 +74,15 @@ export default function Profile() {
         }
         setUser(data.user);
 
-        await supabase
-          .from("user_profiles")
-          .upsert({ user_id: data.user.id, display_name: "" }, { onConflict: "user_id" });
+        // Ensure profile row exists
+        await supabase.from("user_profiles").upsert(
+          { user_id: data.user.id, display_name: "" },
+          { onConflict: "user_id" }
+        );
 
         await refresh(data.user.id);
       } catch (e) {
-        setErr(e?.message || String(e));
+        setErrMsg(e?.message || String(e));
       }
     })();
   }, []);
@@ -67,21 +95,17 @@ export default function Profile() {
       .maybeSingle();
     if (pErr) throw pErr;
     setProfile(p || null);
-    setDraftName(p?.display_name || "");
+    setNameInput(p?.display_name || "");
 
-    // points this week
-    const { data: pts, error: ptsErr } = await supabase
-      .from("activity_events")
-      .select("points,event_date")
+    // Weekly points + weekly done count
+    const { data: logRows, error: lErr } = await supabase
+      .from("activity_logs")
+      .select("points,event_type,created_at")
       .eq("user_id", userId)
-      .gte("event_date", isoDay(weekStart))
-      .lt("event_date", isoDay(weekEnd));
-    if (!ptsErr) {
-      const total = (pts || []).reduce((sum, r) => sum + Number(r.points || 0), 0);
-      setWeekPoints(total);
-    }
+      .gte("created_at", weekStart.toISOString())
+      .lt("created_at", weekEnd.toISOString());
+    if (!lErr) setWeekPoints((logRows || []).reduce((sum, r) => sum + (Number(r.points) || 0), 0));
 
-    // workouts done this week (plans)
     const { data: doneRows, error: dErr } = await supabase
       .from("plans")
       .select("id")
@@ -90,17 +114,36 @@ export default function Profile() {
       .gte("plan_date", isoDay(weekStart))
       .lt("plan_date", isoDay(weekEnd));
     if (!dErr) setWeekDoneCount((doneRows || []).length);
+
+    // Weight: latest + previous (for delta)
+    const { data: ws, error: wErr } = await supabase
+      .from("weigh_ins")
+      .select("weigh_date,weight_kg")
+      .eq("user_id", userId)
+      .order("weigh_date", { ascending: false })
+      .limit(2);
+    if (!wErr && ws && ws.length) {
+      setLatestWeight(ws[0]);
+      if (ws.length >= 2) {
+        const delta = Number(ws[0].weight_kg) - Number(ws[1].weight_kg);
+        setWeightDelta(Number.isFinite(delta) ? delta : null);
+      } else {
+        setWeightDelta(null);
+      }
+    } else {
+      setLatestWeight(null);
+      setWeightDelta(null);
+    }
   }
 
-  async function saveDisplayName(name) {
+  async function saveDisplayName() {
     if (!user) return;
-    setSaving(true);
-    // IMPORTANT: don't touch columns that may not exist (e.g. updated_at)
-    const { error } = await supabase
-      .from("user_profiles")
-      .upsert({ user_id: user.id, display_name: name }, { onConflict: "user_id" });
-    setSaving(false);
-    if (error) alert(error.message);
+    const name = (nameInput || "").trim();
+    const { error } = await supabase.from("user_profiles").upsert(
+      { user_id: user.id, display_name: name },
+      { onConflict: "user_id" }
+    );
+    if (error) return alert(error.message);
     await refresh(user.id);
   }
 
@@ -109,60 +152,79 @@ export default function Profile() {
     window.location.href = "/";
   }
 
-  if (err) {
+  if (errMsg) {
     return (
-      <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
-        <h2>Profile</h2>
-        <div><b>Error:</b> {err}</div>
-        <button style={{ marginTop: 12 }} onClick={logout}>Logout</button>
+      <div style={{ padding: 20, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
+        <h2>Pact</h2>
+        <p><b>Error:</b> {errMsg}</p>
+        <button onClick={logout}>Logout</button>
       </div>
     );
   }
 
-  if (!user || !profile) return <div style={{ padding: 18, fontFamily: "system-ui" }}>Loading…</div>;
+  if (!user || profile === null) {
+    return <div style={{ padding: 20, fontFamily: "system-ui" }}>Loading…</div>;
+  }
 
   return (
     <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h2 style={{ margin: 0 }}>Profile</h2>
-        <a href="/dashboard" style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 10, textDecoration: "none" }}>
-          Back
-        </a>
-      </div>
+      <TopNav active="profile" onLogout={logout} />
 
+      {/* PROFILE */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
-        <div style={{ fontSize: 14, opacity: 0.8 }}>Display name</div>
-        <input
-          value={draftName}
-          onChange={(e) => setDraftName(e.target.value)}
-          placeholder="Your name"
-          style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 10 }}
-        />
-        <button
-          style={{ width: "100%", padding: 12, marginTop: 10, fontWeight: 900, opacity: saving ? 0.7 : 1 }}
-          onClick={() => saveDisplayName(draftName)}
-          disabled={saving}
-        >
-          Save name
-        </button>
-        <div style={{ marginTop: 10, fontSize: 13, opacity: 0.75 }}>
-          Email: <b>{user.email}</b>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Profile</div>
+
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 13, opacity: 0.7 }}>Email</div>
+          <div style={{ fontWeight: 800 }}>{user.email}</div>
+        </div>
+
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 13, opacity: 0.7 }}>Display name</div>
+          <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+            <input
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              placeholder="Your name"
+              style={{ flex: 1, padding: 12, fontSize: 16 }}
+            />
+            <button onClick={saveDisplayName} style={{ padding: "12px 14px", fontWeight: 800 }}>
+              Save
+            </button>
+          </div>
         </div>
       </div>
 
+      {/* THIS WEEK */}
       <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
         <div style={{ fontSize: 14, opacity: 0.8 }}>This week</div>
-        <div style={{ marginTop: 8, fontSize: 22, fontWeight: 900 }}>{weekPoints} points</div>
-        <div style={{ marginTop: 6, fontSize: 13, opacity: 0.75 }}>
-          Workouts completed: {weekDoneCount}
-        </div>
-        <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
-          Week: {isoDay(weekStart)} → {isoDay(weekEnd)}
+        <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
+          <div><b>Points:</b> {weekPoints}</div>
+          <div><b>Workouts done:</b> {weekDoneCount}</div>
         </div>
       </div>
 
-      <div style={{ marginTop: 14 }}>
-        <button style={{ width: "100%", padding: 12 }} onClick={logout}>Logout</button>
+      {/* WEIGHT */}
+      <div style={{ marginTop: 14, padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
+        <div style={{ fontSize: 14, opacity: 0.8 }}>Weight</div>
+
+        {latestWeight ? (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 22, fontWeight: 800 }}>{latestWeight.weight_kg} kg</div>
+            <div style={{ marginTop: 4, fontSize: 13, opacity: 0.75 }}>
+              Logged: {latestWeight.weigh_date}
+              {weightDelta != null && (
+                <> — change vs previous: {weightDelta > 0 ? "+" : ""}{weightDelta.toFixed(1)} kg</>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div style={{ marginTop: 8, opacity: 0.75 }}>No weigh-in logged yet.</div>
+        )}
+
+        <div style={{ marginTop: 10, fontSize: 13, opacity: 0.75 }}>
+          Weigh-in is only available on Sundays from the Dashboard.
+        </div>
       </div>
     </div>
   );
