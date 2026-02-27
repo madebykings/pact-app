@@ -3,7 +3,7 @@ import React from "react";
 
 /**
  * Top navigation used across pages.
- * active: "dashboard" | "pact" | "profile" | "settings"
+ * active: "dashboard" | "pact" | "plan" | "profile" | "settings"
  */
 export default function TopNav({ active, onLogout }) {
   const linkStyle = (isActive) => ({
@@ -21,6 +21,7 @@ export default function TopNav({ active, onLogout }) {
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <a href="/dashboard" style={linkStyle(active === "dashboard")}>Dashboard</a>
         <a href="/team" style={linkStyle(active === "pact")}>Pact</a>
+        <a href="/week-plan" style={linkStyle(active === "plan")}>Plan</a>
         <a href="/profile" style={linkStyle(active === "profile")}>Profile</a>
         <a href="/settings" style={linkStyle(active === "settings")}>Settings</a>
       </div>
