@@ -2,7 +2,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import TopNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
-import { enablePush, initOneSignal, onesignalHints } from "../lib/onesignal";
 
 function startOfWeek(d) {
   // Monday start
@@ -34,10 +33,8 @@ export default function Profile() {
   const [weekPoints, setWeekPoints] = useState(0);
   const [weekDoneCount, setWeekDoneCount] = useState(0);
 
-  const [pushId, setPushId] = useState(null);
-  const [pushMsg, setPushMsg] = useState("");
-
   const [weightStatus, setWeightStatus] = useState(null); // { thisWeek, lastWeek, delta }
+  const [targetProgress, setTargetProgress] = useState(null); // { current, target, toGo }
 
   const [err, setErr] = useState("");
 
@@ -81,12 +78,6 @@ export default function Profile() {
           .upsert({ user_id: data.user.id, display_name: "" }, { onConflict: "user_id" });
 
         await refresh(data.user.id);
-
-        // Safe init (no prompt)
-        try {
-          const id = await initOneSignal();
-          if (id) setPushId(id);
-        } catch {}
       } catch (e) {
         setErr(e?.message || String(e));
       }
@@ -99,6 +90,21 @@ export default function Profile() {
   }, []);
 
   async function refresh(userId) {
+    // user settings (for team + target weight)
+    let teamId = null;
+    let targetWeight = null;
+    {
+      const { data: st, error: stErr } = await supabase
+        .from("user_settings")
+        .select("team_id,target_weight_kg")
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (!stErr) {
+        teamId = st?.team_id || null;
+        targetWeight = st?.target_weight_kg ?? null;
+      }
+    }
+
     // profile
     {
       const { data: p, error: pErr } = await supabase
@@ -110,36 +116,54 @@ export default function Profile() {
       const prof = p || null;
       setProfile(prof);
       setNameDraft(prof?.display_name || "");
+
+      if (targetWeight == null) targetWeight = prof?.target_weight_kg ?? null;
     }
 
     // ✅ points this week
-    // Your dashboard logs into `events` (not `points_events`), so compute from `events` with fallback.
+    // Prefer activity_events (team aware), fallback to events / points_events.
     {
-      // Primary: events table
-      const { data: ev, error: evErr } = await supabase
-        .from("events")
-        .select("points,created_at")
-        .eq("user_id", userId)
-        .gte("created_at", weekStart.toISOString())
-        .lt("created_at", weekEnd.toISOString());
+      // 1) activity_events (if present)
+      const startStr = isoDay(weekStart);
+      const endStr = isoDay(new Date(weekEnd.getTime() - 1));
 
-      if (!evErr) {
-        const total = (ev || []).reduce((sum, r) => sum + Number(r.points || 0), 0);
+      const { data: ae, error: aeErr } = await supabase
+        .from("activity_events")
+        .select("points")
+        .eq("user_id", userId)
+        .gte("event_date", startStr)
+        .lte("event_date", endStr);
+
+      if (!aeErr && Array.isArray(ae)) {
+        const total = ae.reduce((sum, r) => sum + Number(r.points || 0), 0);
         setWeekPoints(total);
       } else {
-        // Fallback: points_events (older schema)
-        const { data: pts, error: ptsErr } = await supabase
-          .from("points_events")
+        // 2) events
+        const { data: ev, error: evErr } = await supabase
+          .from("events")
           .select("points,created_at")
           .eq("user_id", userId)
           .gte("created_at", weekStart.toISOString())
           .lt("created_at", weekEnd.toISOString());
 
-        if (!ptsErr) {
-          const total = (pts || []).reduce((sum, r) => sum + Number(r.points || 0), 0);
+        if (!evErr) {
+          const total = (ev || []).reduce((sum, r) => sum + Number(r.points || 0), 0);
           setWeekPoints(total);
         } else {
-          setWeekPoints(0);
+          // 3) points_events (legacy)
+          const { data: pts, error: ptsErr } = await supabase
+            .from("points_events")
+            .select("points,created_at")
+            .eq("user_id", userId)
+            .gte("created_at", weekStart.toISOString())
+            .lt("created_at", weekEnd.toISOString());
+
+          if (!ptsErr) {
+            const total = (pts || []).reduce((sum, r) => sum + Number(r.points || 0), 0);
+            setWeekPoints(total);
+          } else {
+            setWeekPoints(0);
+          }
         }
       }
     }
@@ -193,6 +217,14 @@ export default function Profile() {
           delta,
         });
       }
+
+      // progress to target
+      if (targetWeight != null && thisWeight != null) {
+        const toGo = thisWeight - targetWeight;
+        setTargetProgress({ current: thisWeight, target: targetWeight, toGo });
+      } else {
+        setTargetProgress(null);
+      }
     }
   }
 
@@ -217,44 +249,6 @@ export default function Profile() {
     nameSaveTimer.current = setTimeout(() => {
       saveDisplayName(next);
     }, 500);
-  }
-
-  async function subscribePush() {
-    if (!user) return;
-    setPushMsg("");
-
-    const { isIOS, isStandalone } = onesignalHints();
-
-    const res = await enablePush();
-    setPushMsg(res.reason || "");
-
-    if (res.ok && res.id) {
-      setPushId(res.id);
-
-      // push_devices table may or may not have updated_at; don't send it.
-      const { error } = await supabase
-        .from("push_devices")
-        .upsert({ user_id: user.id, onesignal_player_id: res.id }, { onConflict: "user_id" });
-
-      if (error) console.warn("push_devices upsert failed:", error.message);
-
-      alert("Push enabled ✅");
-      return;
-    }
-
-    // Better UX hints
-    if (isIOS && !isStandalone) {
-      alert("On iPhone/iPad: Add to Home Screen first, then enable push.");
-      return;
-    }
-
-    // If permission denied, the browser will keep refusing until user changes site settings.
-    if ((res.reason || "").toLowerCase().includes("permission")) {
-      alert("Push permission is blocked in the browser. Allow notifications for this site in browser settings, then try again.");
-      return;
-    }
-
-    alert(res.reason || "Push not enabled.");
   }
 
   async function logout() {
@@ -348,19 +342,35 @@ export default function Profile() {
             )}
           </div>
 
+          {/* ✅ Progress to target */}
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(0,0,0,.06)" }}>
+            <div style={{ fontSize: 14, opacity: 0.8 }}>Progress to target</div>
+            {targetProgress ? (
+              <div style={{ marginTop: 6, display: "flex", gap: 14, flexWrap: "wrap", alignItems: "baseline" }}>
+                <div>
+                  <span style={{ opacity: 0.7, fontSize: 13 }}>Current: </span>
+                  <b>{targetProgress.current.toFixed(1)}kg</b>
+                </div>
+                <div>
+                  <span style={{ opacity: 0.7, fontSize: 13 }}>Target: </span>
+                  <b>{Number(targetProgress.target).toFixed(1)}kg</b>
+                </div>
+                <div>
+                  <span style={{ opacity: 0.7, fontSize: 13 }}>To go: </span>
+                  <b>{Math.abs(targetProgress.toGo).toFixed(1)}kg {targetProgress.toGo > 0 ? "↓" : "✓"}</b>
+                </div>
+              </div>
+            ) : (
+              <div style={{ marginTop: 6, opacity: 0.7 }}>Set a target weight in Settings to see progress.</div>
+            )}
+          </div>
+
           <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
             Week: {isoDay(weekStart)} → {isoDay(weekEnd)}
           </div>
         </div>
 
-        <div style={{ padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12 }}>
-          <div style={{ fontSize: 14, opacity: 0.8 }}>Push notifications</div>
-          <div style={{ marginTop: 6, fontWeight: 800 }}>{pushId ? "enabled" : "not enabled"}</div>
-          {pushMsg ? <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>{pushMsg}</div> : null}
-          <button style={{ width: "100%", padding: 12, marginTop: 10, fontWeight: 900 }} onClick={subscribePush}>
-            Enable push
-          </button>
-        </div>
+        {/* Push settings live in /settings */}
       </div>
     </div>
   );
