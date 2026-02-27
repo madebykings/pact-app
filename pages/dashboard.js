@@ -14,7 +14,7 @@ const ALL_ACTIVITIES = [
   { value: "HILLWALK", label: "Hillwalk" },
   { value: "WEIGHTS", label: "Weights" },
   { value: "YOGA", label: "Yoga" },
-  { value: "PILATES", label: "Pilates" },
+  { value: "MOBILITY", label: "Mobility" }, // ✅ in your DB check constraint
   { value: "OTHER", label: "Other" },
 ];
 
@@ -161,15 +161,20 @@ export default function Dashboard() {
   }
 
   async function ensurePlan(userId, d) {
-    const { error } = await supabase.from("plans").upsert(
-      {
-        user_id: userId,
-        plan_date: isoDate(d),
-        plan_type: planTypeForDate(d),
-        // IMPORTANT: no status here
-      },
-      { onConflict: "user_id,plan_date", ignoreDuplicates: true }
-    );
+    // ✅ Important: your plans table has NOT NULL status + updated_at
+    // Even if DB defaults exist, always sending these makes this bulletproof.
+    const payload = {
+      user_id: userId,
+      plan_date: isoDate(d),
+      plan_type: planTypeForDate(d),
+      status: "PLANNED",
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error } = await supabase.from("plans").upsert(payload, {
+      onConflict: "user_id,plan_date",
+      ignoreDuplicates: true,
+    });
     if (error) throw error;
   }
 
@@ -185,8 +190,21 @@ export default function Dashboard() {
   }
 
   async function refreshAll(userId) {
-    setTodayPlan(await fetchPlan(userId, todayStr));
-    setTomorrowPlan(await fetchPlan(userId, tomorrowStr));
+    // ✅ self-heal: if plan missing for any reason, create + refetch once
+    let tp = await fetchPlan(userId, todayStr);
+    let tmr = await fetchPlan(userId, tomorrowStr);
+
+    if (!tp) {
+      await ensurePlan(userId, today);
+      tp = await fetchPlan(userId, todayStr);
+    }
+    if (!tmr) {
+      await ensurePlan(userId, tomorrow);
+      tmr = await fetchPlan(userId, tomorrowStr);
+    }
+
+    setTodayPlan(tp || false);
+    setTomorrowPlan(tmr || false);
 
     // settings
     {
@@ -289,12 +307,10 @@ export default function Dashboard() {
       // event_date default at DB
     };
 
-    // Use upsert to avoid duplicate points for same event/day
-    const conflict =
-      plan_id ? "user_id,plan_id,event_type,event_date" : "user_id,event_type,event_date";
+    const conflict = plan_id
+      ? "user_id,plan_id,event_type,event_date"
+      : "user_id,event_type,event_date";
 
-    // Supabase upsert needs a real unique constraint/index (we created partial uniques).
-    // Postgres will match the correct unique index when applicable.
     await supabase.from("activity_events").upsert(payload, { onConflict: conflict });
   }
 
@@ -315,7 +331,7 @@ export default function Dashboard() {
   // Actions
   // -----------------
   async function setTomorrowTime(timeStr) {
-    if (!user || !tomorrowPlan) return;
+    if (!user || !tomorrowPlan || tomorrowPlan === false) return;
 
     const wasUnset = !tomorrowPlan.planned_time;
 
@@ -325,7 +341,6 @@ export default function Dashboard() {
       .eq("id", tomorrowPlan.id);
     if (error) alert(error.message);
 
-    // points: only first time you set it
     if (wasUnset && timeStr) {
       await logEvent({ event_type: "set_tomorrow_time", points: 3, plan_id: tomorrowPlan.id });
     }
@@ -334,7 +349,7 @@ export default function Dashboard() {
   }
 
   async function moveTodayTime(timeStr) {
-    if (!user || !todayPlan) return;
+    if (!user || !todayPlan || todayPlan === false) return;
     const { error } = await supabase
       .from("plans")
       .update({ planned_time: timeStr, updated_at: new Date().toISOString() })
@@ -344,7 +359,7 @@ export default function Dashboard() {
   }
 
   async function setPlanType(plan, type) {
-    if (!user || !plan) return;
+    if (!user || !plan || plan === false) return;
     const { error } = await supabase
       .from("plans")
       .update({ plan_type: type, updated_at: new Date().toISOString() })
@@ -354,7 +369,7 @@ export default function Dashboard() {
   }
 
   async function markDone(plan) {
-    if (!user || !plan) return;
+    if (!user || !plan || plan === false) return;
 
     const { error } = await supabase
       .from("plans")
@@ -373,7 +388,7 @@ export default function Dashboard() {
   }
 
   async function cancel(plan) {
-    if (!user || !plan) return;
+    if (!user || !plan || plan === false) return;
     const reason = prompt("Reason (illness/work/family/couldn't be bothered)?") || "unspecified";
 
     const { error } = await supabase
@@ -388,7 +403,7 @@ export default function Dashboard() {
   }
 
   async function undoDone(plan) {
-    if (!user || !plan) return;
+    if (!user || !plan || plan === false) return;
 
     const { error } = await supabase
       .from("plans")
@@ -404,7 +419,7 @@ export default function Dashboard() {
   }
 
   async function undoCancel(plan) {
-    if (!user || !plan) return;
+    if (!user || !plan || plan === false) return;
 
     const { error } = await supabase
       .from("plans")
@@ -429,7 +444,6 @@ export default function Dashboard() {
     );
     if (error) alert(error.message);
 
-    // points when you first hit target today
     const target = settings?.water_target_ml || 3000;
     if (current < target && next >= target) {
       await logEvent({ event_type: "water_hit_target", points: 3 });
@@ -467,7 +481,6 @@ export default function Dashboard() {
     );
     if (error) alert(error.message);
 
-    // if both times set and meets target, award points once/day
     const nextSleep = { ...(sleep || {}), ...(patch || {}) };
     const hours = calcSleepHours(nextSleep.bed_time, nextSleep.wake_time);
     const targetH = settings?.sleep_target_hours ?? 8;
@@ -512,8 +525,25 @@ export default function Dashboard() {
     );
   }
 
-  if (!todayPlan || !tomorrowPlan) {
+  // Still loading initial fetch
+  if (todayPlan === null || tomorrowPlan === null) {
     return <div style={{ padding: 20, fontFamily: "system-ui" }}>Loading…</div>;
+  }
+
+  // If missing even after self-heal, show a real message (no infinite spinner)
+  if (!todayPlan || !tomorrowPlan || todayPlan === false || tomorrowPlan === false) {
+    return (
+      <div style={{ padding: 20, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
+        <h2>Pact</h2>
+        <p>Couldn’t load today/tomorrow plans.</p>
+        <button style={{ width: "100%", padding: 12 }} onClick={() => window.location.reload()}>
+          Reload
+        </button>
+        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
+          If this persists, it’s RLS or a NOT NULL/default mismatch.
+        </div>
+      </div>
+    );
   }
 
   const isTrainingToday = todayPlan.plan_type !== "REST";
@@ -522,7 +552,6 @@ export default function Dashboard() {
 
   const slept = calcSleepHours(sleep?.bed_time, sleep?.wake_time);
 
-  // Filter activity options by settings.included_activities (plus REST always)
   const allowed = new Set(settings?.included_activities || []);
   const activityOptions = ALL_ACTIVITIES.filter((a) => a.value === "REST" || allowed.has(a.value));
 
