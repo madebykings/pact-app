@@ -3,6 +3,15 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "../../lib/supabaseClient";
 
+async function safeReadJson(res) {
+  const text = await res.text();
+  try {
+    return { json: JSON.parse(text), text };
+  } catch {
+    return { json: null, text };
+  }
+}
+
 export default function InvitePage() {
   const router = useRouter();
   const { token } = router.query;
@@ -37,8 +46,8 @@ export default function InvitePage() {
 
       setInvite(data);
 
-      const status = String(data.status || "").toUpperCase();
-      if (status !== "PENDING") {
+      const status = String(data.status || "").toLowerCase();
+      if (status !== "pending") {
         setMsg(`Invite is already ${status}.`);
         return;
       }
@@ -66,8 +75,12 @@ export default function InvitePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token: invite.token, userId: user.id }),
       });
-      const json = await res.json();
-      if (!res.ok || !json.ok) throw new Error(json?.error || "accept_failed");
+
+      const { json, text } = await safeReadJson(res);
+      if (!res.ok || !json?.ok) {
+        const err = json?.error || text || "accept_failed";
+        throw new Error(err);
+      }
 
       alert("Joined team ✅");
       router.push("/team");
@@ -99,7 +112,7 @@ export default function InvitePage() {
         )}
 
         <button
-          disabled={!user || !invite || busy || String(invite.status || "").toUpperCase() !== "PENDING"}
+          disabled={!user || !invite || busy || String(invite?.status || "").toLowerCase() !== "pending"}
           onClick={accept}
           style={{ width: "100%", padding: 12, marginTop: 12, fontWeight: 900 }}
         >
