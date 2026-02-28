@@ -13,10 +13,15 @@ function mondayStart(d) {
   return x;
 }
 
-function prettyName(email, displayName) {
-  if (displayName && displayName.trim()) return displayName.trim();
-  if (!email) return "Member";
-  return email.split("@")[0];
+function shortId(uid) {
+  if (!uid) return "";
+  return String(uid).slice(0, 6);
+}
+
+function prettyName(displayName, userId) {
+  const dn = (displayName || "").trim();
+  if (dn) return dn;
+  return `Member (${shortId(userId)})`;
 }
 
 function badgeForRank(idx) {
@@ -25,6 +30,15 @@ function badgeForRank(idx) {
   if (idx === 2) return "🥉";
   return "•";
 }
+
+// Treat all these as “cancel bucket” so cancel + undo nets to 0
+const CANCEL_TYPES = new Set([
+  "workout_cancel",
+  "workout_uncancel",
+  "workout_cancel_undo",
+  "workout_undo_cancel",
+  "cancel_undo",
+]);
 
 export default function Leaderboard() {
   const [user, setUser] = useState(null);
@@ -73,7 +87,7 @@ export default function Leaderboard() {
           return;
         }
 
-        // 1) members list
+        // Members list (prefer view if available)
         let mem = [];
         try {
           const { data: vm, error: vmErr } = await supabase
@@ -97,7 +111,7 @@ export default function Leaderboard() {
           if (userIds.length) {
             const { data: ups, error: upErr } = await supabase
               .from("user_profiles")
-              .select("user_id, display_name")
+              .select("user_id,display_name")
               .in("user_id", userIds);
             if (upErr) throw upErr;
 
@@ -108,61 +122,28 @@ export default function Leaderboard() {
           }
         }
 
-        if (!mem.find((m) => m.user_id === data.user.id)) {
-          mem.push({ user_id: data.user.id, display_name: "" });
-        }
-
         setMembers(mem);
 
-        // 2) Events
-        // Prefer activity_events (team-scoped). Fallback to events (user-scoped) if needed.
-        let evs = [];
-        let gotEvents = false;
+        // Events for week (team scoped)
+        const { data: evs, error: evErr } = await supabase
+          .from("activity_events")
+          .select("user_id,event_type,points,event_date")
+          .eq("team_id", tid)
+          .gte("event_date", startStr)
+          .lte("event_date", endStr);
 
-        {
-          const { data: ae, error: aeErr } = await supabase
-            .from("activity_events")
-            .select("user_id,event_type,points,event_date")
-            .eq("team_id", tid)
-            .gte("event_date", startStr)
-            .lte("event_date", endStr);
+        if (evErr) throw evErr;
 
-          if (!aeErr) {
-            evs = ae || [];
-            gotEvents = true;
-          }
-        }
-
-        if (!gotEvents) {
-          // fallback: events table (created_at window)
-          const { data: e2, error: e2Err } = await supabase
-            .from("events")
-            .select("user_id,event_type,points,created_at")
-            .in(
-              "user_id",
-              mem.map((m) => m.user_id)
-            )
-            .gte("created_at", weekStart.toISOString())
-            .lt("created_at", addDays(weekEnd, 1).toISOString()); // inclusive end day
-
-          if (e2Err) throw e2Err;
-
-          evs = (e2 || []).map((r) => ({
-            user_id: r.user_id,
-            event_type: r.event_type,
-            points: r.points,
-            event_date: r.created_at ? String(r.created_at).slice(0, 10) : null,
-          }));
-        }
-
-        // 3) aggregate (NO undo logic)
+        // Aggregate into buckets per user for *the whole week*
         const byUser = new Map();
+
         (evs || []).forEach((e) => {
           const uid = e.user_id;
+          if (!uid) return;
+
           if (!byUser.has(uid)) {
             byUser.set(uid, {
               user_id: uid,
-              points: 0,
               done: 0,
               cancel: 0,
               sleep: 0,
@@ -170,36 +151,57 @@ export default function Leaderboard() {
               plan_time: 0,
             });
           }
+
           const r = byUser.get(uid);
           const pts = Number(e.points || 0);
-          r.points += pts;
+          const t = e.event_type;
 
-          // buckets
-          if (e.event_type === "workout_done") r.done += pts;
-          else if (e.event_type === "workout_cancel") r.cancel += pts;
-          else if (e.event_type === "sleep_hit_target") r.sleep += pts;
-          else if (e.event_type === "water_hit_target") r.water += pts;
-          else if (e.event_type === "set_tomorrow_time") r.plan_time += pts;
+          if (t === "workout_done") r.done += pts;
+          else if (t === "set_tomorrow_time") r.plan_time += pts;
+          else if (t === "water_hit_target") r.water += pts;
+          else if (t === "sleep_hit_target") r.sleep += pts;
+          else if (CANCEL_TYPES.has(t)) r.cancel += pts;
         });
 
-        // Ensure all members appear even with 0 points
-        const merged = mem.map((m) => ({
-          user_id: m.user_id,
-          display_name: m.display_name || "",
-          ...(byUser.get(m.user_id) || {
-            user_id: m.user_id,
-            points: 0,
-            done: 0,
-            cancel: 0,
-            sleep: 0,
-            water: 0,
-            plan_time: 0,
-          }),
-        }));
+        // Ensure all members appear (even if 0 points)
+        const merged = (mem || []).map((m) => {
+          const agg =
+            byUser.get(m.user_id) || {
+              user_id: m.user_id,
+              done: 0,
+              cancel: 0,
+              sleep: 0,
+              water: 0,
+              plan_time: 0,
+            };
 
+          const total =
+            Number(agg.done || 0) +
+            Number(agg.plan_time || 0) +
+            Number(agg.water || 0) +
+            Number(agg.sleep || 0) +
+            Number(agg.cancel || 0);
+
+          return {
+            user_id: m.user_id,
+            display_name: m.display_name || "",
+            done: agg.done,
+            cancel: agg.cancel,
+            sleep: agg.sleep,
+            water: agg.water,
+            plan_time: agg.plan_time,
+            points: total,
+          };
+        });
+
+        // Sort: points desc; tie-break: name; then user_id
         merged.sort((a, b) => {
           if (b.points !== a.points) return b.points - a.points;
-          return (a.display_name || "").localeCompare(b.display_name || "");
+          const nameA = prettyName(a.display_name, a.user_id);
+          const nameB = prettyName(b.display_name, b.user_id);
+          const byName = nameA.localeCompare(nameB);
+          if (byName !== 0) return byName;
+          return String(a.user_id).localeCompare(String(b.user_id));
         });
 
         setRows(merged);
@@ -254,14 +256,13 @@ export default function Leaderboard() {
 
       {!loading && teamId && (
         <>
-          {/* Ranked list */}
           <div style={{ marginTop: 14, padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12 }}>
             <div style={{ fontSize: 14, opacity: 0.8 }}>This week ranking</div>
 
             <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
               {rows.map((r, idx) => {
                 const isMe = r.user_id === meId;
-                const name = prettyName(isMe ? user?.email : null, r.display_name);
+                const name = prettyName(r.display_name, r.user_id);
 
                 return (
                   <div
@@ -280,7 +281,6 @@ export default function Leaderboard() {
                       <div style={{ fontWeight: 900, fontSize: 18 }}>{r.points} pts</div>
                     </div>
 
-                    {/* breakdown (NO UNDO) */}
                     <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10, fontSize: 13, opacity: 0.85 }}>
                       <span>
                         DONE: <b>{r.done}</b>
@@ -304,7 +304,6 @@ export default function Leaderboard() {
             </div>
           </div>
 
-          {/* What counts (NO UNDO DONE) */}
           <div style={{ marginTop: 14, padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12 }}>
             <div style={{ fontSize: 14, opacity: 0.8 }}>What counts</div>
             <div style={{ marginTop: 8, lineHeight: 1.5 }}>
@@ -319,10 +318,6 @@ export default function Leaderboard() {
               • Cancel: <b>-5</b>
             </div>
           </div>
-
-          {/* NOTE: points not allocating is upstream.
-              This page only reads what’s in events/activity_events.
-              Next step is to ensure dashboard/profile write events consistently. */}
         </>
       )}
     </div>
