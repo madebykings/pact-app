@@ -3,8 +3,9 @@ import { useEffect, useMemo, useState } from "react";
 import TopNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
 
+// Use lowercase tokens to avoid copy/paste + route weirdness
 function randomToken(len = 24) {
-  const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
   let out = "";
   for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
   return out;
@@ -202,7 +203,7 @@ export default function Team() {
 
     const token = randomToken(28);
 
-    // ✅ FIX: must be one of: pending/accepted/expired/revoked
+    // ✅ must be one of: pending/accepted/expired/revoked
     const { error } = await supabase.from("team_invites").insert({
       team_id: settings.team_id,
       email,
@@ -238,17 +239,22 @@ export default function Team() {
   async function acceptInvite(invite) {
     if (!user) return;
 
-    const { error: mErr } = await supabase.from("team_members").insert({
-      team_id: invite.team_id,
-      user_id: user.id,
-      role: "member",
-    });
+    // ✅ idempotent (no double-click / refresh issues)
+    const { error: mErr } = await supabase.from("team_members").upsert(
+      {
+        team_id: invite.team_id,
+        user_id: user.id,
+        role: "member",
+      },
+      { onConflict: "team_id,user_id" }
+    );
     if (mErr) return alert(mErr.message);
 
-    await supabase
+    const { error: iErr } = await supabase
       .from("team_invites")
       .update({ status: "accepted", accepted_at: new Date().toISOString() })
       .eq("id", invite.id);
+    if (iErr) return alert(iErr.message);
 
     const { error: sErr } = await supabase
       .from("user_settings")
@@ -499,4 +505,4 @@ export default function Team() {
       </div>
     </div>
   );
-}
+                }
