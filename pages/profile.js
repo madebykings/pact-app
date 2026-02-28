@@ -39,12 +39,6 @@ async function ensureProfileRow(userId) {
   }
 }
 
-const DONE_TYPES = new Set(["workout_done", "undo_workout_done"]);
-const CANCEL_TYPES = new Set(["workout_cancel", "undo_workout_cancel"]);
-const PLAN_TYPES = new Set(["set_tomorrow_time"]);
-const WATER_TYPES = new Set(["water_hit_target"]);
-const SLEEP_TYPES = new Set(["sleep_hit_target"]);
-
 export default function Profile() {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -103,21 +97,17 @@ export default function Profile() {
     return () => {
       if (nameSaveTimer.current) clearTimeout(nameSaveTimer.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function refresh(userId) {
-    // settings (target + team)
-    let teamId = null;
+    // settings (target weight)
     let targetWeight = null;
     {
       const { data: st } = await supabase
         .from("user_settings")
-        .select("team_id,target_weight_kg")
+        .select("target_weight_kg")
         .eq("user_id", userId)
         .maybeSingle();
-
-      teamId = st?.team_id || null;
       targetWeight = st?.target_weight_kg ?? null;
     }
 
@@ -133,51 +123,24 @@ export default function Profile() {
       setNameDraft(p?.display_name || "");
     }
 
-    // ✅ weekly points from activity_events (sum ALL points; buckets for sanity)
+    // ✅ weekly points: sum ALL points this week (no team filter)
     {
-      const startStr = isoDay(weekStart);
-      const endStr = isoDay(weekEndInclusive);
-
-      let q = supabase
+      const { data: evs, error: evErr } = await supabase
         .from("activity_events")
-        .select("event_type,points")
+        .select("points,event_date")
         .eq("user_id", userId)
-        .gte("event_date", startStr)
-        .lte("event_date", endStr);
-
-      if (teamId) q = q.eq("team_id", teamId);
-
-      const { data: evs, error: evErr } = await q;
+        .gte("event_date", isoDay(weekStart))
+        .lte("event_date", isoDay(weekEndInclusive));
 
       if (evErr) {
         setWeekPoints(0);
       } else {
-        let total = 0;
-        let done = 0,
-          plan_time = 0,
-          water = 0,
-          sleep = 0,
-          cancel = 0;
-
-        (evs || []).forEach((r) => {
-          const pts = Number(r.points || 0);
-          const t = r.event_type;
-
-          total += pts;
-
-          if (DONE_TYPES.has(t)) done += pts;
-          else if (PLAN_TYPES.has(t)) plan_time += pts;
-          else if (WATER_TYPES.has(t)) water += pts;
-          else if (SLEEP_TYPES.has(t)) sleep += pts;
-          else if (CANCEL_TYPES.has(t)) cancel += pts;
-        });
-
-        // total is the truth
+        const total = (evs || []).reduce((acc, r) => acc + Number(r.points || 0), 0);
         setWeekPoints(total);
       }
     }
 
-    // workouts done count this week from plans
+    // workouts done count (plans) this week
     {
       const { data: doneRows, error: dErr } = await supabase
         .from("plans")
@@ -190,7 +153,7 @@ export default function Profile() {
       else setWeekDoneCount(0);
     }
 
-    // weight trend (weigh_date + weight_kg)
+    // weight trend
     {
       const { data: thisWeekRows } = await supabase
         .from("weigh_ins")
