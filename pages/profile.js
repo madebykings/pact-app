@@ -2,22 +2,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import TopNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
+import { addDays, isoDate } from "../lib/weekTemplate";
 
-function startOfWeek(d) {
+function mondayStart(d) {
   const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
   const day = x.getDay(); // 0=Sun
-  const diff = (day === 0 ? -6 : 1) - day;
+  const diff = day === 0 ? -6 : 1 - day;
   x.setDate(x.getDate() + diff);
+  x.setHours(0, 0, 0, 0);
   return x;
-}
-
-function isoDay(d) {
-  const x = new Date(d);
-  const yyyy = x.getFullYear();
-  const mm = String(x.getMonth() + 1).padStart(2, "0");
-  const dd = String(x.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
 }
 
 function safeNum(v) {
@@ -52,26 +45,13 @@ export default function Profile() {
   const [err, setErr] = useState("");
 
   const now = useMemo(() => new Date(), []);
-  const weekStart = useMemo(() => startOfWeek(now), [now]);
-  const weekEndExclusive = useMemo(() => {
-    const x = new Date(weekStart);
-    x.setDate(x.getDate() + 7);
-    return x;
-  }, [weekStart]);
+  const weekStart = useMemo(() => mondayStart(now), [now]);
+  const weekEnd = useMemo(() => addDays(weekStart, 6), [weekStart]);
+  const lastWeekStart = useMemo(() => addDays(weekStart, -7), [weekStart]);
+  const lastWeekEnd = useMemo(() => addDays(lastWeekStart, 6), [lastWeekStart]);
 
-  const weekEndInclusive = useMemo(() => {
-    const x = new Date(weekEndExclusive);
-    x.setDate(x.getDate() - 1);
-    return x;
-  }, [weekEndExclusive]);
-
-  const lastWeekStart = useMemo(() => {
-    const x = new Date(weekStart);
-    x.setDate(x.getDate() - 7);
-    return x;
-  }, [weekStart]);
-
-  const lastWeekEndExclusive = useMemo(() => new Date(weekStart), [weekStart]);
+  const startStr = isoDate(weekStart);
+  const endStr = isoDate(weekEnd);
 
   const nameSaveTimer = useRef(null);
   const [nameDraft, setNameDraft] = useState("");
@@ -103,11 +83,12 @@ export default function Profile() {
     // settings (target weight)
     let targetWeight = null;
     {
-      const { data: st } = await supabase
+      const { data: st, error: stErr } = await supabase
         .from("user_settings")
         .select("target_weight_kg")
         .eq("user_id", userId)
         .maybeSingle();
+      if (stErr) throw stErr;
       targetWeight = st?.target_weight_kg ?? null;
     }
 
@@ -123,55 +104,80 @@ export default function Profile() {
       setNameDraft(p?.display_name || "");
     }
 
-    // ✅ weekly points: sum ALL points this week (no team filter)
+    // ✅ weekly points: activity_events primary, points_events fallback
     {
-      const { data: evs, error: evErr } = await supabase
+      let total = 0;
+
+      const { data: aData, error: aErr } = await supabase
         .from("activity_events")
         .select("points,event_date")
         .eq("user_id", userId)
-        .gte("event_date", isoDay(weekStart))
-        .lte("event_date", isoDay(weekEndInclusive));
+        .gte("event_date", startStr)
+        .lte("event_date", endStr);
 
-      if (evErr) {
-        setWeekPoints(0);
-      } else {
-        const total = (evs || []).reduce((acc, r) => acc + Number(r.points || 0), 0);
-        setWeekPoints(total);
+      if (aErr) {
+        console.warn("profile activity_events error:", aErr);
+      } else if ((aData || []).length) {
+        total = (aData || []).reduce((acc, r) => acc + Number(r.points || 0), 0);
       }
+
+      if (!total) {
+        const { data: pData, error: pErr } = await supabase
+          .from("points_events")
+          .select("points,date")
+          .eq("user_id", userId)
+          .gte("date", startStr)
+          .lte("date", endStr);
+
+        if (pErr) {
+          console.warn("profile points_events fallback error:", pErr);
+        } else {
+          total = (pData || []).reduce((acc, r) => acc + Number(r.points || 0), 0);
+        }
+      }
+
+      setWeekPoints(total);
     }
 
-    // workouts done count (plans) this week
+    // workouts done count this week from plans (truth for “completed”)
     {
+      const endExclusive = isoDate(addDays(weekEnd, 1));
       const { data: doneRows, error: dErr } = await supabase
         .from("plans")
         .select("id")
         .eq("user_id", userId)
         .eq("status", "DONE")
-        .gte("plan_date", isoDay(weekStart))
-        .lt("plan_date", isoDay(weekEndExclusive));
-      if (!dErr) setWeekDoneCount((doneRows || []).length);
-      else setWeekDoneCount(0);
+        .gte("plan_date", startStr)
+        .lt("plan_date", endExclusive);
+
+      if (dErr) throw dErr;
+      setWeekDoneCount((doneRows || []).length);
     }
 
     // weight trend
     {
-      const { data: thisWeekRows } = await supabase
-        .from("weigh_ins")
-        .select("weight_kg,weigh_date")
-        .eq("user_id", userId)
-        .gte("weigh_date", isoDay(weekStart))
-        .lt("weigh_date", isoDay(weekEndExclusive))
-        .order("weigh_date", { ascending: false })
-        .limit(1);
+      const endExclusive = isoDate(addDays(weekEnd, 1));
+      const lastEndExclusive = isoDate(addDays(lastWeekEnd, 1));
 
-      const { data: lastWeekRows } = await supabase
+      const { data: thisWeekRows, error: twErr } = await supabase
         .from("weigh_ins")
         .select("weight_kg,weigh_date")
         .eq("user_id", userId)
-        .gte("weigh_date", isoDay(lastWeekStart))
-        .lt("weigh_date", isoDay(lastWeekEndExclusive))
+        .gte("weigh_date", startStr)
+        .lt("weigh_date", endExclusive)
         .order("weigh_date", { ascending: false })
         .limit(1);
+      if (twErr) throw twErr;
+
+      const { data: lastWeekRows, error: lwErr } = await supabase
+        .from("weigh_ins")
+        .select("weight_kg,weigh_date")
+        .eq("user_id", userId)
+        .gte("weigh_date", isoDate(lastWeekStart))
+        .lt("weigh_date", lastEndExclusive)
+        .order("weigh_date", { ascending: false })
+        .limit(1);
+      if (lwErr) throw lwErr;
 
       const tw = thisWeekRows?.[0] || null;
       const lw = lastWeekRows?.[0] || null;
@@ -193,6 +199,8 @@ export default function Profile() {
         setTargetProgress(null);
       }
     }
+
+    setErr("");
   }
 
   async function saveDisplayName(name) {
@@ -324,7 +332,7 @@ export default function Profile() {
           </div>
 
           <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
-            Week: {isoDay(weekStart)} → {isoDay(weekEndInclusive)}
+            Week: {startStr} → {endStr}
           </div>
         </div>
       </div>
