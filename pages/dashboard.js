@@ -213,7 +213,10 @@ export default function Dashboard() {
           { name: "Cod Liver Oil", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
           { name: "Tongkat Ali", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
           { name: "Shilajit", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
-          { name: "Collagen", rule_type: "ANYTIME" },
+
+          // FIX: "ANYTIME" violates supplements_rule_type_check. Use an allowed window.
+          { name: "Collagen", rule_type: "MIDDAY_WINDOW", window_start: "10:00", window_end: "16:00" },
+
           { name: "Ashwagandha", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
           { name: "Magnesium", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
           { name: "ZMA", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
@@ -493,8 +496,11 @@ export default function Dashboard() {
 
   function suppWhenLabel(s, plannedTime) {
     const rt = s.rule_type;
-    if (rt === "ANYTIME") return "Anytime";
+
+    // NOTE: "ANYTIME" is not allowed by supplements_rule_type_check, so no branch for it.
+
     if (rt === "MORNING_WINDOW") return `${s.window_start || "06:00"}–${s.window_end || "10:00"}`;
+    if (rt === "MIDDAY_WINDOW") return `${s.window_start || "10:00"}–${s.window_end || "16:00"}`;
     if (rt === "EVENING_WINDOW") return `${s.window_start || "18:00"}–${s.window_end || "23:59"}`;
     if (rt === "BED_WINDOW") return `${s.window_start || "21:00"}–${s.window_end || "23:59"}`;
     if (rt === "PRE_WORKOUT") {
@@ -502,6 +508,7 @@ export default function Dashboard() {
       const off = Number(s.offset_minutes || 0);
       return `${Math.abs(off)}m before`;
     }
+    if (rt === "POST_WORKOUT") return "After workout";
     return "";
   }
 
@@ -620,7 +627,7 @@ export default function Dashboard() {
           <div style={{ marginTop: 12 }}>
             <div style={{ fontWeight: 800 }}>
               Status: {todayPlan.status}
-              {todayPlan.cancel_reason ? ` (${todayPlan.cancel_reason})` : ""}
+                    {todayPlan.cancel_reason ? ` (${todayPlan.cancel_reason})` : ""}
             </div>
 
             {todayPlan.status === "DONE" && (
