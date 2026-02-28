@@ -34,20 +34,16 @@ async function ensureProfileRow(userId) {
   if (error) throw error;
 
   if (!existing) {
-    const { error: insErr } = await supabase
-      .from("user_profiles")
-      .insert({ user_id: userId, display_name: "" });
+    const { error: insErr } = await supabase.from("user_profiles").insert({ user_id: userId, display_name: "" });
     if (insErr) throw insErr;
   }
 }
 
-const CANCEL_TYPES = new Set([
-  "workout_cancel",
-  "workout_uncancel",
-  "workout_cancel_undo",
-  "workout_undo_cancel",
-  "cancel_undo",
-]);
+const DONE_TYPES = new Set(["workout_done", "undo_workout_done"]);
+const CANCEL_TYPES = new Set(["workout_cancel", "undo_workout_cancel"]);
+const PLAN_TYPES = new Set(["set_tomorrow_time"]);
+const WATER_TYPES = new Set(["water_hit_target"]);
+const SLEEP_TYPES = new Set(["sleep_hit_target"]);
 
 export default function Profile() {
   const [user, setUser] = useState(null);
@@ -56,8 +52,8 @@ export default function Profile() {
   const [weekPoints, setWeekPoints] = useState(0);
   const [weekDoneCount, setWeekDoneCount] = useState(0);
 
-  const [weightStatus, setWeightStatus] = useState(null); // { thisWeek, lastWeek, delta }
-  const [targetProgress, setTargetProgress] = useState(null); // { current, target, toGo }
+  const [weightStatus, setWeightStatus] = useState(null);
+  const [targetProgress, setTargetProgress] = useState(null);
 
   const [err, setErr] = useState("");
 
@@ -66,7 +62,7 @@ export default function Profile() {
   const weekEndExclusive = useMemo(() => {
     const x = new Date(weekStart);
     x.setDate(x.getDate() + 7);
-    return x; // exclusive end
+    return x;
   }, [weekStart]);
 
   const weekEndInclusive = useMemo(() => {
@@ -111,7 +107,7 @@ export default function Profile() {
   }, []);
 
   async function refresh(userId) {
-    // settings (for target weight + team)
+    // settings (target + team)
     let teamId = null;
     let targetWeight = null;
     {
@@ -137,7 +133,7 @@ export default function Profile() {
       setNameDraft(p?.display_name || "");
     }
 
-    // ✅ Weekly points = sum of buckets from activity_events in week range
+    // ✅ weekly points from activity_events (sum ALL points; buckets for sanity)
     {
       const startStr = isoDay(weekStart);
       const endStr = isoDay(weekEndInclusive);
@@ -149,43 +145,39 @@ export default function Profile() {
         .gte("event_date", startStr)
         .lte("event_date", endStr);
 
-      // keep team scoped if your writes are team-scoped
       if (teamId) q = q.eq("team_id", teamId);
 
-      const { data: ae, error: aeErr } = await q;
+      const { data: evs, error: evErr } = await q;
 
-      if (aeErr) {
+      if (evErr) {
         setWeekPoints(0);
       } else {
+        let total = 0;
         let done = 0,
           plan_time = 0,
           water = 0,
           sleep = 0,
           cancel = 0;
 
-        (ae || []).forEach((r) => {
-          const t = r.event_type;
+        (evs || []).forEach((r) => {
           const pts = Number(r.points || 0);
+          const t = r.event_type;
 
-          if (t === "workout_done") done += pts;
-          else if (t === "set_tomorrow_time") plan_time += pts;
-          else if (t === "water_hit_target") water += pts;
-          else if (t === "sleep_hit_target") sleep += pts;
+          total += pts;
+
+          if (DONE_TYPES.has(t)) done += pts;
+          else if (PLAN_TYPES.has(t)) plan_time += pts;
+          else if (WATER_TYPES.has(t)) water += pts;
+          else if (SLEEP_TYPES.has(t)) sleep += pts;
           else if (CANCEL_TYPES.has(t)) cancel += pts;
-          else {
-            // for any other event types you add later, just count their points too
-            // (prevents profile being “0” when you introduce new scoring events)
-            // If you *don’t* want that, remove this line.
-            done += 0;
-          }
         });
 
-        const total = done + plan_time + water + sleep + cancel;
+        // total is the truth
         setWeekPoints(total);
       }
     }
 
-    // workouts done this week (plans)
+    // workouts done count this week from plans
     {
       const { data: doneRows, error: dErr } = await supabase
         .from("plans")
@@ -198,7 +190,7 @@ export default function Profile() {
       else setWeekDoneCount(0);
     }
 
-    // ✅ weight status uses weigh_date + weight_kg
+    // weight trend (weigh_date + weight_kg)
     {
       const { data: thisWeekRows } = await supabase
         .from("weigh_ins")
@@ -228,11 +220,7 @@ export default function Profile() {
         setWeightStatus(null);
       } else {
         const delta = thisWeight != null && lastWeight != null ? thisWeight - lastWeight : null;
-        setWeightStatus({
-          thisWeek: thisWeight,
-          lastWeek: lastWeight,
-          delta,
-        });
+        setWeightStatus({ thisWeek: thisWeight, lastWeek: lastWeight, delta });
       }
 
       if (targetWeight != null && thisWeight != null) {
@@ -297,13 +285,7 @@ export default function Profile() {
 
   const delta = weightStatus?.delta;
   const deltaLabel =
-    delta == null
-      ? null
-      : delta === 0
-      ? "↔ same"
-      : delta < 0
-      ? `↓ ${Math.abs(delta).toFixed(1)}`
-      : `↑ ${Math.abs(delta).toFixed(1)}`;
+    delta == null ? null : delta === 0 ? "↔ same" : delta < 0 ? `↓ ${Math.abs(delta).toFixed(1)}` : `↑ ${Math.abs(delta).toFixed(1)}`;
 
   return (
     <div>
