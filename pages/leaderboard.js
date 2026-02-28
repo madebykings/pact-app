@@ -7,7 +7,7 @@ import { addDays, isoDate } from "../lib/weekTemplate";
 function mondayStart(d) {
   const x = new Date(d);
   const day = x.getDay(); // 0=Sun
-  const diff = day === 0 ? -6 : 1 - day; // Monday start
+  const diff = day === 0 ? -6 : 1 - day;
   x.setDate(x.getDate() + diff);
   x.setHours(0, 0, 0, 0);
   return x;
@@ -36,6 +36,14 @@ const CANCEL_TYPES = new Set(["workout_cancel", "undo_workout_cancel"]);
 const PLAN_TYPES = new Set(["set_tomorrow_time"]);
 const WATER_TYPES = new Set(["water_hit_target"]);
 const SLEEP_TYPES = new Set(["sleep_hit_target"]);
+
+function addBucket(agg, type, pts) {
+  if (DONE_TYPES.has(type)) agg.done += pts;
+  else if (PLAN_TYPES.has(type)) agg.plan_time += pts;
+  else if (WATER_TYPES.has(type)) agg.water += pts;
+  else if (SLEEP_TYPES.has(type)) agg.sleep += pts;
+  else if (CANCEL_TYPES.has(type)) agg.cancel += pts;
+}
 
 export default function Leaderboard() {
   const [user, setUser] = useState(null);
@@ -81,7 +89,7 @@ export default function Leaderboard() {
           return;
         }
 
-        // 1) Team member IDs
+        // Members
         const { data: tm, error: tmErr } = await supabase
           .from("team_members")
           .select("user_id")
@@ -95,7 +103,6 @@ export default function Leaderboard() {
           return;
         }
 
-        // 2) Names
         let profiles = [];
         const { data: ups, error: upErr } = await supabase
           .from("user_profiles")
@@ -108,39 +115,70 @@ export default function Leaderboard() {
           display_name: profiles.find((p) => p.user_id === uid)?.display_name || "",
         }));
 
-        // 3) ✅ Events for week, by member list (NO team_id filter)
-        const { data: evs, error: evErr } = await supabase
-          .from("activity_events")
-          .select("user_id,event_type,points,event_date")
-          .in("user_id", userIds)
-          .gte("event_date", startStr)
-          .lte("event_date", endStr);
+        // PRIMARY: activity_events
+        let evs = [];
+        {
+          const { data: aData, error: aErr } = await supabase
+            .from("activity_events")
+            .select("user_id,event_type,points,event_date")
+            .in("user_id", userIds)
+            .gte("event_date", startStr)
+            .lte("event_date", endStr);
 
-        if (evErr) throw evErr;
+          if (aErr) {
+            // don't fail immediately; try fallback
+            console.warn("leaderboard activity_events error:", aErr);
+          } else {
+            evs = aData || [];
+          }
+        }
 
-        // 4) Aggregate
+        // FALLBACK: points_events if activity_events empty (or blocked)
+        // (helps when older code only wrote points_events)
+        let pev = [];
+        if (!evs.length) {
+          const { data: pData, error: pErr } = await supabase
+            .from("points_events")
+            .select("user_id,type,points,date")
+            .in("user_id", userIds)
+            .gte("date", startStr)
+            .lte("date", endStr);
+
+          if (pErr) {
+            console.warn("leaderboard points_events fallback error:", pErr);
+          } else {
+            pev = pData || [];
+          }
+        }
+
         const byUser = new Map();
-        (evs || []).forEach((e) => {
-          const uid = e.user_id;
-          if (!uid) return;
-
+        const ensure = (uid) => {
           if (!byUser.has(uid)) {
             byUser.set(uid, { total: 0, done: 0, plan_time: 0, water: 0, sleep: 0, cancel: 0 });
           }
-          const r = byUser.get(uid);
+          return byUser.get(uid);
+        };
+
+        (evs || []).forEach((e) => {
+          const uid = e.user_id;
+          if (!uid) return;
+          const agg = ensure(uid);
           const pts = Number(e.points || 0);
           const t = e.event_type;
-
-          r.total += pts;
-
-          if (DONE_TYPES.has(t)) r.done += pts;
-          else if (PLAN_TYPES.has(t)) r.plan_time += pts;
-          else if (WATER_TYPES.has(t)) r.water += pts;
-          else if (SLEEP_TYPES.has(t)) r.sleep += pts;
-          else if (CANCEL_TYPES.has(t)) r.cancel += pts;
+          agg.total += pts;
+          addBucket(agg, t, pts);
         });
 
-        // 5) Merge + sort
+        (pev || []).forEach((e) => {
+          const uid = e.user_id;
+          if (!uid) return;
+          const agg = ensure(uid);
+          const pts = Number(e.points || 0);
+          const t = e.type;
+          agg.total += pts;
+          addBucket(agg, t, pts);
+        });
+
         const merged = members.map((m) => {
           const agg = byUser.get(m.user_id) || { total: 0, done: 0, plan_time: 0, water: 0, sleep: 0, cancel: 0 };
           return {
@@ -150,8 +188,8 @@ export default function Leaderboard() {
             plan_time: agg.plan_time,
             water: agg.water,
             sleep: agg.sleep,
-            cancel: agg.cancel, // cancel + undo nets correctly
-            points: agg.total,  // weekly total
+            cancel: agg.cancel,
+            points: agg.total, // ✅ weekly total points
           };
         });
 
@@ -165,6 +203,7 @@ export default function Leaderboard() {
         });
 
         setRows(merged);
+        setErr("");
         setLoading(false);
       } catch (e) {
         setErr(e?.message || String(e));
@@ -267,4 +306,4 @@ export default function Leaderboard() {
       )}
     </div>
   );
-                  }
+                        }
