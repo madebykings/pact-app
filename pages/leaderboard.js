@@ -31,9 +31,9 @@ function badgeForRank(idx) {
   return "•";
 }
 
-const DONE_TYPES = new Set(["workout_done", "undo_workout_done"]); // +10 and -10
-const CANCEL_TYPES = new Set(["workout_cancel", "undo_workout_cancel"]); // -5 and +5
-const PLAN_TYPES = new Set(["set_tomorrow_time"]); // +3 or -3
+const DONE_TYPES = new Set(["workout_done", "undo_workout_done"]);
+const CANCEL_TYPES = new Set(["workout_cancel", "undo_workout_cancel"]);
+const PLAN_TYPES = new Set(["set_tomorrow_time"]);
 const WATER_TYPES = new Set(["water_hit_target"]);
 const SLEEP_TYPES = new Set(["sleep_hit_target"]);
 
@@ -65,7 +65,6 @@ export default function Leaderboard() {
         }
         setUser(data.user);
 
-        // team_id
         const { data: st, error: stErr } = await supabase
           .from("user_settings")
           .select("team_id")
@@ -82,60 +81,58 @@ export default function Leaderboard() {
           return;
         }
 
-        // Members (simple + reliable)
+        // 1) Team member IDs
         const { data: tm, error: tmErr } = await supabase
           .from("team_members")
           .select("user_id")
           .eq("team_id", tid);
         if (tmErr) throw tmErr;
 
-        const userIds = (tm || []).map((x) => x.user_id);
-        const { data: ups } = userIds.length
-          ? await supabase.from("user_profiles").select("user_id,display_name").in("user_id", userIds)
-          : { data: [] };
+        const userIds = (tm || []).map((x) => x.user_id).filter(Boolean);
+        if (!userIds.length) {
+          setRows([]);
+          setLoading(false);
+          return;
+        }
+
+        // 2) Names
+        let profiles = [];
+        const { data: ups, error: upErr } = await supabase
+          .from("user_profiles")
+          .select("user_id,display_name")
+          .in("user_id", userIds);
+        if (!upErr) profiles = ups || [];
 
         const members = userIds.map((uid) => ({
           user_id: uid,
-          display_name: (ups || []).find((p) => p.user_id === uid)?.display_name || "",
+          display_name: profiles.find((p) => p.user_id === uid)?.display_name || "",
         }));
 
-        // Events for the WHOLE WEEK (team scoped)
+        // 3) ✅ Events for week, by member list (NO team_id filter)
         const { data: evs, error: evErr } = await supabase
           .from("activity_events")
           .select("user_id,event_type,points,event_date")
-          .eq("team_id", tid)
+          .in("user_id", userIds)
           .gte("event_date", startStr)
           .lte("event_date", endStr);
 
         if (evErr) throw evErr;
 
-        // Aggregate per user
+        // 4) Aggregate
         const byUser = new Map();
-
         (evs || []).forEach((e) => {
           const uid = e.user_id;
           if (!uid) return;
 
           if (!byUser.has(uid)) {
-            byUser.set(uid, {
-              user_id: uid,
-              done: 0,
-              plan_time: 0,
-              water: 0,
-              sleep: 0,
-              cancel: 0,
-              total: 0,
-            });
+            byUser.set(uid, { total: 0, done: 0, plan_time: 0, water: 0, sleep: 0, cancel: 0 });
           }
-
           const r = byUser.get(uid);
           const pts = Number(e.points || 0);
           const t = e.event_type;
 
-          // ✅ total ALWAYS sums all points for the week
           r.total += pts;
 
-          // buckets for display
           if (DONE_TYPES.has(t)) r.done += pts;
           else if (PLAN_TYPES.has(t)) r.plan_time += pts;
           else if (WATER_TYPES.has(t)) r.water += pts;
@@ -143,18 +140,9 @@ export default function Leaderboard() {
           else if (CANCEL_TYPES.has(t)) r.cancel += pts;
         });
 
+        // 5) Merge + sort
         const merged = members.map((m) => {
-          const agg =
-            byUser.get(m.user_id) || {
-              user_id: m.user_id,
-              done: 0,
-              plan_time: 0,
-              water: 0,
-              sleep: 0,
-              cancel: 0,
-              total: 0,
-            };
-
+          const agg = byUser.get(m.user_id) || { total: 0, done: 0, plan_time: 0, water: 0, sleep: 0, cancel: 0 };
           return {
             user_id: m.user_id,
             display_name: m.display_name || "",
@@ -162,8 +150,8 @@ export default function Leaderboard() {
             plan_time: agg.plan_time,
             water: agg.water,
             sleep: agg.sleep,
-            cancel: agg.cancel, // ✅ cancel + undo nets correctly
-            points: agg.total,  // ✅ weekly total points
+            cancel: agg.cancel, // cancel + undo nets correctly
+            points: agg.total,  // weekly total
           };
         });
 
@@ -183,7 +171,6 @@ export default function Leaderboard() {
         setLoading(false);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function logout() {
@@ -209,7 +196,13 @@ export default function Leaderboard() {
         Week: <b>{startStr}</b> → <b>{endStr}</b>
       </div>
 
-      {!teamId && !loading && (
+      {loading && (
+        <div style={{ marginTop: 14, padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12 }}>
+          Loading…
+        </div>
+      )}
+
+      {!loading && !teamId && (
         <div style={{ marginTop: 14, padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12 }}>
           You’re not in a team yet. Create/join a team first.
           <div style={{ marginTop: 10 }}>
@@ -217,12 +210,6 @@ export default function Leaderboard() {
               Go to Team
             </a>
           </div>
-        </div>
-      )}
-
-      {loading && (
-        <div style={{ marginTop: 14, padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12 }}>
-          Loading…
         </div>
       )}
 
@@ -280,4 +267,4 @@ export default function Leaderboard() {
       )}
     </div>
   );
-}
+                  }
