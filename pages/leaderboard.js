@@ -31,21 +31,17 @@ function badgeForRank(idx) {
   return "•";
 }
 
-// Treat all these as “cancel bucket” so cancel + undo nets to 0
-const CANCEL_TYPES = new Set([
-  "workout_cancel",
-  "workout_uncancel",
-  "workout_cancel_undo",
-  "workout_undo_cancel",
-  "cancel_undo",
-]);
+const DONE_TYPES = new Set(["workout_done", "undo_workout_done"]); // +10 and -10
+const CANCEL_TYPES = new Set(["workout_cancel", "undo_workout_cancel"]); // -5 and +5
+const PLAN_TYPES = new Set(["set_tomorrow_time"]); // +3 or -3
+const WATER_TYPES = new Set(["water_hit_target"]);
+const SLEEP_TYPES = new Set(["sleep_hit_target"]);
 
 export default function Leaderboard() {
   const [user, setUser] = useState(null);
   const [teamId, setTeamId] = useState(null);
 
-  const [members, setMembers] = useState([]); // {user_id, display_name?}
-  const [rows, setRows] = useState([]); // ranked
+  const [rows, setRows] = useState([]);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -69,7 +65,7 @@ export default function Leaderboard() {
         }
         setUser(data.user);
 
-        // Pull team_id from user_settings
+        // team_id
         const { data: st, error: stErr } = await supabase
           .from("user_settings")
           .select("team_id")
@@ -81,50 +77,29 @@ export default function Leaderboard() {
         setTeamId(tid);
 
         if (!tid) {
-          setMembers([]);
           setRows([]);
           setLoading(false);
           return;
         }
 
-        // Members list (prefer view if available)
-        let mem = [];
-        try {
-          const { data: vm, error: vmErr } = await supabase
-            .from("v_team_members_with_profiles")
-            .select("user_id, display_name")
-            .eq("team_id", tid);
-          if (vmErr) throw vmErr;
+        // Members (simple + reliable)
+        const { data: tm, error: tmErr } = await supabase
+          .from("team_members")
+          .select("user_id")
+          .eq("team_id", tid);
+        if (tmErr) throw tmErr;
 
-          mem = (vm || []).map((m) => ({
-            user_id: m.user_id,
-            display_name: m.display_name || "",
-          }));
-        } catch {
-          const { data: tm, error: tmErr } = await supabase
-            .from("team_members")
-            .select("user_id")
-            .eq("team_id", tid);
-          if (tmErr) throw tmErr;
+        const userIds = (tm || []).map((x) => x.user_id);
+        const { data: ups } = userIds.length
+          ? await supabase.from("user_profiles").select("user_id,display_name").in("user_id", userIds)
+          : { data: [] };
 
-          const userIds = (tm || []).map((x) => x.user_id);
-          if (userIds.length) {
-            const { data: ups, error: upErr } = await supabase
-              .from("user_profiles")
-              .select("user_id,display_name")
-              .in("user_id", userIds);
-            if (upErr) throw upErr;
+        const members = userIds.map((uid) => ({
+          user_id: uid,
+          display_name: (ups || []).find((p) => p.user_id === uid)?.display_name || "",
+        }));
 
-            mem = userIds.map((uid) => {
-              const p = (ups || []).find((u) => u.user_id === uid);
-              return { user_id: uid, display_name: p?.display_name || "" };
-            });
-          }
-        }
-
-        setMembers(mem);
-
-        // Events for week (team scoped)
+        // Events for the WHOLE WEEK (team scoped)
         const { data: evs, error: evErr } = await supabase
           .from("activity_events")
           .select("user_id,event_type,points,event_date")
@@ -134,7 +109,7 @@ export default function Leaderboard() {
 
         if (evErr) throw evErr;
 
-        // Aggregate into buckets per user for *the whole week*
+        // Aggregate per user
         const byUser = new Map();
 
         (evs || []).forEach((e) => {
@@ -145,10 +120,11 @@ export default function Leaderboard() {
             byUser.set(uid, {
               user_id: uid,
               done: 0,
-              cancel: 0,
-              sleep: 0,
-              water: 0,
               plan_time: 0,
+              water: 0,
+              sleep: 0,
+              cancel: 0,
+              total: 0,
             });
           }
 
@@ -156,45 +132,41 @@ export default function Leaderboard() {
           const pts = Number(e.points || 0);
           const t = e.event_type;
 
-          if (t === "workout_done") r.done += pts;
-          else if (t === "set_tomorrow_time") r.plan_time += pts;
-          else if (t === "water_hit_target") r.water += pts;
-          else if (t === "sleep_hit_target") r.sleep += pts;
+          // ✅ total ALWAYS sums all points for the week
+          r.total += pts;
+
+          // buckets for display
+          if (DONE_TYPES.has(t)) r.done += pts;
+          else if (PLAN_TYPES.has(t)) r.plan_time += pts;
+          else if (WATER_TYPES.has(t)) r.water += pts;
+          else if (SLEEP_TYPES.has(t)) r.sleep += pts;
           else if (CANCEL_TYPES.has(t)) r.cancel += pts;
         });
 
-        // Ensure all members appear (even if 0 points)
-        const merged = (mem || []).map((m) => {
+        const merged = members.map((m) => {
           const agg =
             byUser.get(m.user_id) || {
               user_id: m.user_id,
               done: 0,
-              cancel: 0,
-              sleep: 0,
-              water: 0,
               plan_time: 0,
+              water: 0,
+              sleep: 0,
+              cancel: 0,
+              total: 0,
             };
-
-          const total =
-            Number(agg.done || 0) +
-            Number(agg.plan_time || 0) +
-            Number(agg.water || 0) +
-            Number(agg.sleep || 0) +
-            Number(agg.cancel || 0);
 
           return {
             user_id: m.user_id,
             display_name: m.display_name || "",
             done: agg.done,
-            cancel: agg.cancel,
-            sleep: agg.sleep,
-            water: agg.water,
             plan_time: agg.plan_time,
-            points: total,
+            water: agg.water,
+            sleep: agg.sleep,
+            cancel: agg.cancel, // ✅ cancel + undo nets correctly
+            points: agg.total,  // ✅ weekly total points
           };
         });
 
-        // Sort: points desc; tie-break: name; then user_id
         merged.sort((a, b) => {
           if (b.points !== a.points) return b.points - a.points;
           const nameA = prettyName(a.display_name, a.user_id);
@@ -282,21 +254,11 @@ export default function Leaderboard() {
                     </div>
 
                     <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10, fontSize: 13, opacity: 0.85 }}>
-                      <span>
-                        DONE: <b>{r.done}</b>
-                      </span>
-                      <span>
-                        PLAN: <b>{r.plan_time}</b>
-                      </span>
-                      <span>
-                        WATER: <b>{r.water}</b>
-                      </span>
-                      <span>
-                        SLEEP: <b>{r.sleep}</b>
-                      </span>
-                      <span>
-                        CANCEL: <b>{r.cancel}</b>
-                      </span>
+                      <span>DONE: <b>{r.done}</b></span>
+                      <span>PLAN: <b>{r.plan_time}</b></span>
+                      <span>WATER: <b>{r.water}</b></span>
+                      <span>SLEEP: <b>{r.sleep}</b></span>
+                      <span>CANCEL: <b>{r.cancel}</b></span>
                     </div>
                   </div>
                 );
@@ -307,14 +269,10 @@ export default function Leaderboard() {
           <div style={{ marginTop: 14, padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12 }}>
             <div style={{ fontSize: 14, opacity: 0.8 }}>What counts</div>
             <div style={{ marginTop: 8, lineHeight: 1.5 }}>
-              • Workout done: <b>+10</b>
-              <br />
-              • Set tomorrow time (first time): <b>+3</b>
-              <br />
-              • Hit water target: <b>+3</b>
-              <br />
-              • Hit sleep target: <b>+3</b>
-              <br />
+              • Workout done: <b>+10</b><br />
+              • Set tomorrow time (first time): <b>+3</b><br />
+              • Hit water target: <b>+3</b><br />
+              • Hit sleep target: <b>+3</b><br />
               • Cancel: <b>-5</b>
             </div>
           </div>
