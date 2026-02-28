@@ -1,3 +1,4 @@
+// pages/profile.js
 import { useEffect, useMemo, useRef, useState } from "react";
 import TopNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
@@ -40,6 +41,14 @@ async function ensureProfileRow(userId) {
   }
 }
 
+const CANCEL_TYPES = new Set([
+  "workout_cancel",
+  "workout_uncancel",
+  "workout_cancel_undo",
+  "workout_undo_cancel",
+  "cancel_undo",
+]);
+
 export default function Profile() {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -54,11 +63,17 @@ export default function Profile() {
 
   const now = useMemo(() => new Date(), []);
   const weekStart = useMemo(() => startOfWeek(now), [now]);
-  const weekEnd = useMemo(() => {
+  const weekEndExclusive = useMemo(() => {
     const x = new Date(weekStart);
     x.setDate(x.getDate() + 7);
-    return x;
+    return x; // exclusive end
   }, [weekStart]);
+
+  const weekEndInclusive = useMemo(() => {
+    const x = new Date(weekEndExclusive);
+    x.setDate(x.getDate() - 1);
+    return x;
+  }, [weekEndExclusive]);
 
   const lastWeekStart = useMemo(() => {
     const x = new Date(weekStart);
@@ -66,7 +81,7 @@ export default function Profile() {
     return x;
   }, [weekStart]);
 
-  const lastWeekEnd = useMemo(() => new Date(weekStart), [weekStart]);
+  const lastWeekEndExclusive = useMemo(() => new Date(weekStart), [weekStart]);
 
   const nameSaveTimer = useRef(null);
   const [nameDraft, setNameDraft] = useState("");
@@ -122,20 +137,19 @@ export default function Profile() {
       setNameDraft(p?.display_name || "");
     }
 
-    // ✅ POINTS: match Leaderboard = activity_events by event_date
+    // ✅ Weekly points = sum of buckets from activity_events in week range
     {
       const startStr = isoDay(weekStart);
-      const endStr = isoDay(new Date(weekEnd.getTime() - 1));
+      const endStr = isoDay(weekEndInclusive);
 
       let q = supabase
         .from("activity_events")
-        .select("points")
+        .select("event_type,points")
         .eq("user_id", userId)
         .gte("event_date", startStr)
         .lte("event_date", endStr);
 
-      // If team mode, points are still fine by user_id alone,
-      // but this keeps it consistent with team-scoped writes.
+      // keep team scoped if your writes are team-scoped
       if (teamId) q = q.eq("team_id", teamId);
 
       const { data: ae, error: aeErr } = await q;
@@ -143,7 +157,30 @@ export default function Profile() {
       if (aeErr) {
         setWeekPoints(0);
       } else {
-        const total = (ae || []).reduce((sum, r) => sum + Number(r.points || 0), 0);
+        let done = 0,
+          plan_time = 0,
+          water = 0,
+          sleep = 0,
+          cancel = 0;
+
+        (ae || []).forEach((r) => {
+          const t = r.event_type;
+          const pts = Number(r.points || 0);
+
+          if (t === "workout_done") done += pts;
+          else if (t === "set_tomorrow_time") plan_time += pts;
+          else if (t === "water_hit_target") water += pts;
+          else if (t === "sleep_hit_target") sleep += pts;
+          else if (CANCEL_TYPES.has(t)) cancel += pts;
+          else {
+            // for any other event types you add later, just count their points too
+            // (prevents profile being “0” when you introduce new scoring events)
+            // If you *don’t* want that, remove this line.
+            done += 0;
+          }
+        });
+
+        const total = done + plan_time + water + sleep + cancel;
         setWeekPoints(total);
       }
     }
@@ -156,19 +193,19 @@ export default function Profile() {
         .eq("user_id", userId)
         .eq("status", "DONE")
         .gte("plan_date", isoDay(weekStart))
-        .lt("plan_date", isoDay(weekEnd));
+        .lt("plan_date", isoDay(weekEndExclusive));
       if (!dErr) setWeekDoneCount((doneRows || []).length);
       else setWeekDoneCount(0);
     }
 
-    // ✅ weight status should use weigh_date + weight_kg (not created_at / kg)
+    // ✅ weight status uses weigh_date + weight_kg
     {
       const { data: thisWeekRows } = await supabase
         .from("weigh_ins")
         .select("weight_kg,weigh_date")
         .eq("user_id", userId)
         .gte("weigh_date", isoDay(weekStart))
-        .lt("weigh_date", isoDay(weekEnd))
+        .lt("weigh_date", isoDay(weekEndExclusive))
         .order("weigh_date", { ascending: false })
         .limit(1);
 
@@ -177,7 +214,7 @@ export default function Profile() {
         .select("weight_kg,weigh_date")
         .eq("user_id", userId)
         .gte("weigh_date", isoDay(lastWeekStart))
-        .lt("weigh_date", isoDay(lastWeekEnd))
+        .lt("weigh_date", isoDay(lastWeekEndExclusive))
         .order("weigh_date", { ascending: false })
         .limit(1);
 
@@ -224,7 +261,6 @@ export default function Profile() {
 
   function onNameChange(next) {
     setNameDraft(next);
-
     if (nameSaveTimer.current) clearTimeout(nameSaveTimer.current);
     nameSaveTimer.current = setTimeout(() => {
       saveDisplayName(next);
@@ -261,7 +297,13 @@ export default function Profile() {
 
   const delta = weightStatus?.delta;
   const deltaLabel =
-    delta == null ? null : delta === 0 ? "↔ same" : delta < 0 ? `↓ ${Math.abs(delta).toFixed(1)}` : `↑ ${Math.abs(delta).toFixed(1)}`;
+    delta == null
+      ? null
+      : delta === 0
+      ? "↔ same"
+      : delta < 0
+      ? `↓ ${Math.abs(delta).toFixed(1)}`
+      : `↑ ${Math.abs(delta).toFixed(1)}`;
 
   return (
     <div>
@@ -326,7 +368,9 @@ export default function Profile() {
                 </div>
                 <div>
                   <span style={{ opacity: 0.7, fontSize: 13 }}>To go: </span>
-                  <b>{Math.abs(targetProgress.toGo).toFixed(1)}kg {targetProgress.toGo > 0 ? "↓" : "✓"}</b>
+                  <b>
+                    {Math.abs(targetProgress.toGo).toFixed(1)}kg {targetProgress.toGo > 0 ? "↓" : "✓"}
+                  </b>
                 </div>
               </div>
             ) : (
@@ -335,7 +379,7 @@ export default function Profile() {
           </div>
 
           <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
-            Week: {isoDay(weekStart)} → {isoDay(weekEnd)}
+            Week: {isoDay(weekStart)} → {isoDay(weekEndInclusive)}
           </div>
         </div>
       </div>
