@@ -18,6 +18,15 @@ function safeNum(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+function uuidv4() {
+  try {
+    return crypto.randomUUID();
+  } catch (_) {
+    const s4 = () => Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1);
+    return `${s4()}${s4()}-${s4()}-${s4()}-${s4()}-${s4()}${s4()}${s4()}`;
+  }
+}
+
 async function ensureProfileRow(userId) {
   const { data: existing, error } = await supabase
     .from("user_profiles")
@@ -52,6 +61,7 @@ export default function Profile() {
 
   const startStr = isoDate(weekStart);
   const endStr = isoDate(weekEnd);
+  const endExclusive = isoDate(addDays(weekEnd, 1));
 
   const nameSaveTimer = useRef(null);
   const [nameDraft, setNameDraft] = useState("");
@@ -79,6 +89,33 @@ export default function Profile() {
     };
   }, []);
 
+  async function ensureWorkoutDoneEvents(userId, donePlans) {
+    // For each DONE plan in this week, ensure we have a +10 activity_event.
+    // Uses the unique index: (user_id, plan_id, event_type, event_date) WHERE plan_id IS NOT NULL
+    if (!donePlans?.length) return;
+
+    const rows = donePlans.map((p) => ({
+      id: uuidv4(),
+      user_id: userId,
+      plan_id: p.id,
+      team_id: null, // optional; dashboard logger may set this elsewhere
+      event_type: "workout_done",
+      points: 10,
+      event_date: p.plan_date,
+      meta: { source: "profile_sync" },
+    }));
+
+    // Insert with conflict ignore => no duplicates
+    const { error } = await supabase
+      .from("activity_events")
+      .insert(rows, { onConflict: "user_id,plan_id,event_type,event_date", ignoreDuplicates: true });
+
+    // If RLS blocks inserts, we just skip (points will remain off, but you’ll see error in console)
+    if (error) {
+      console.warn("ensureWorkoutDoneEvents insert blocked/failed:", error);
+    }
+  }
+
   async function refresh(userId) {
     // settings (target weight)
     let targetWeight = null;
@@ -104,13 +141,32 @@ export default function Profile() {
       setNameDraft(p?.display_name || "");
     }
 
+    // DONE plans this week (also used for workout count)
+    let donePlans = [];
+    {
+      const { data: doneRows, error: dErr } = await supabase
+        .from("plans")
+        .select("id,plan_date")
+        .eq("user_id", userId)
+        .eq("status", "DONE")
+        .gte("plan_date", startStr)
+        .lt("plan_date", endExclusive);
+
+      if (dErr) throw dErr;
+      donePlans = doneRows || [];
+      setWeekDoneCount(donePlans.length);
+    }
+
+    // ✅ Backfill missing workout_done +10 events
+    await ensureWorkoutDoneEvents(userId, donePlans);
+
     // ✅ weekly points: activity_events primary, points_events fallback
     {
       let total = 0;
 
       const { data: aData, error: aErr } = await supabase
         .from("activity_events")
-        .select("points,event_date")
+        .select("points,event_date,event_type,plan_id")
         .eq("user_id", userId)
         .gte("event_date", startStr)
         .lte("event_date", endStr);
@@ -139,24 +195,8 @@ export default function Profile() {
       setWeekPoints(total);
     }
 
-    // workouts done count this week from plans (truth for “completed”)
-    {
-      const endExclusive = isoDate(addDays(weekEnd, 1));
-      const { data: doneRows, error: dErr } = await supabase
-        .from("plans")
-        .select("id")
-        .eq("user_id", userId)
-        .eq("status", "DONE")
-        .gte("plan_date", startStr)
-        .lt("plan_date", endExclusive);
-
-      if (dErr) throw dErr;
-      setWeekDoneCount((doneRows || []).length);
-    }
-
     // weight trend
     {
-      const endExclusive = isoDate(addDays(weekEnd, 1));
       const lastEndExclusive = isoDate(addDays(lastWeekEnd, 1));
 
       const { data: thisWeekRows, error: twErr } = await supabase
@@ -256,7 +296,13 @@ export default function Profile() {
 
   const delta = weightStatus?.delta;
   const deltaLabel =
-    delta == null ? null : delta === 0 ? "↔ same" : delta < 0 ? `↓ ${Math.abs(delta).toFixed(1)}` : `↑ ${Math.abs(delta).toFixed(1)}`;
+    delta == null
+      ? null
+      : delta === 0
+      ? "↔ same"
+      : delta < 0
+      ? `↓ ${Math.abs(delta).toFixed(1)}`
+      : `↑ ${Math.abs(delta).toFixed(1)}`;
 
   return (
     <div>
@@ -338,4 +384,4 @@ export default function Profile() {
       </div>
     </div>
   );
-}
+      }
