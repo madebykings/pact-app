@@ -3,15 +3,6 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "../../lib/supabaseClient";
 
-async function safeReadJson(res) {
-  const text = await res.text();
-  try {
-    return { json: JSON.parse(text), text };
-  } catch {
-    return { json: null, text };
-  }
-}
-
 export default function InvitePage() {
   const router = useRouter();
   const { token } = router.query;
@@ -30,8 +21,10 @@ export default function InvitePage() {
 
   useEffect(() => {
     if (!token) return;
+
     (async () => {
       setMsg("Loading…");
+
       const { data, error } = await supabase
         .from("team_invites")
         .select("*")
@@ -70,17 +63,46 @@ export default function InvitePage() {
 
     setBusy(true);
     try {
-      const res = await fetch("/api/team/accept", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: invite.token, userId: user.id }),
-      });
+      // sanity: pending + not expired
+      const status = String(invite.status || "").toLowerCase();
+      if (status !== "pending") throw new Error("Invite is not pending.");
+      if (invite.expires_at && new Date(invite.expires_at).getTime() < Date.now()) throw new Error("Invite expired.");
 
-      const { json, text } = await safeReadJson(res);
-      if (!res.ok || !json?.ok) {
-        const err = json?.error || text || "accept_failed";
-        throw new Error(err);
+      // optional email guard
+      if (invite.email && user.email && invite.email.toLowerCase() !== user.email.toLowerCase()) {
+        const ok = confirm(
+          `This invite was created for ${invite.email}.\nYou're logged in as ${user.email}.\n\nJoin anyway?`
+        );
+        if (!ok) {
+          setBusy(false);
+          return;
+        }
       }
+
+      // 1) add membership (idempotent)
+      const { error: mErr } = await supabase.from("team_members").upsert(
+        {
+          team_id: invite.team_id,
+          user_id: user.id,
+          role: "member",
+        },
+        { onConflict: "team_id,user_id" }
+      );
+      if (mErr) throw mErr;
+
+      // 2) mark invite accepted
+      const { error: iErr } = await supabase
+        .from("team_invites")
+        .update({ status: "accepted", accepted_at: new Date().toISOString() })
+        .eq("id", invite.id);
+      if (iErr) throw iErr;
+
+      // 3) set user_settings: team mode
+      const { error: sErr } = await supabase
+        .from("user_settings")
+        .update({ team_id: invite.team_id, mode: "team" })
+        .eq("user_id", user.id);
+      if (sErr) throw sErr;
 
       alert("Joined team ✅");
       router.push("/team");
@@ -98,7 +120,9 @@ export default function InvitePage() {
       {!user && (
         <div style={{ padding: 12, border: "1px solid #ddd", borderRadius: 12 }}>
           <div style={{ fontWeight: 800 }}>You need to log in first.</div>
-          <a href="/" style={{ display: "inline-block", marginTop: 10 }}>Go to login</a>
+          <a href="/" style={{ display: "inline-block", marginTop: 10 }}>
+            Go to login
+          </a>
         </div>
       )}
 
