@@ -444,9 +444,8 @@ export default function Dashboard() {
   if (errMsg && todayPlan === null) {
     return (
       <div style={pageStyle}>
-        <div style={{ padding: "24px 18px 0", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div style={{ padding: "24px 18px 0" }}>
           <div style={{ fontSize: 26, fontWeight: 800 }}>Dashboard</div>
-          <button onClick={logout} style={{ background: "rgba(0,0,0,0.06)", border: "none", borderRadius: 20, padding: "7px 14px", fontSize: 13, color: "#555", cursor: "pointer" }}>Sign out</button>
         </div>
         <div style={{ margin: 18, padding: 16, background: "#fff0f0", borderRadius: 14, color: "#c00", fontSize: 14 }}>
           {errMsg}
@@ -485,17 +484,9 @@ export default function Dashboard() {
   return (
     <div style={pageStyle}>
       {/* Header */}
-      <div style={{ padding: "24px 18px 4px", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-        <div>
-          <div style={{ fontSize: 13, color: "#8e8e93", marginBottom: 2 }}>{dateLabel}</div>
-          <div style={{ fontSize: 28, fontWeight: 800, color: "#111", letterSpacing: -0.5 }}>Dashboard</div>
-        </div>
-        <button
-          onClick={logout}
-          style={{ background: "rgba(0,0,0,0.06)", border: "none", borderRadius: 20, padding: "7px 14px", fontSize: 13, color: "#555", cursor: "pointer", marginTop: 6, fontFamily: FONT }}
-        >
-          Sign out
-        </button>
+      <div style={{ padding: "24px 18px 4px" }}>
+        <div style={{ fontSize: 13, color: "#8e8e93", marginBottom: 2 }}>{dateLabel}</div>
+        <div style={{ fontSize: 28, fontWeight: 800, color: "#111", letterSpacing: -0.5 }}>Dashboard</div>
       </div>
 
       <div style={{ padding: "8px 18px 0" }}>
