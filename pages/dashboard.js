@@ -721,7 +721,8 @@ export default function Dashboard() {
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 700, fontSize: 14, color: "#111" }}>{p.plan_type}</div>
                   <div style={{ fontSize: 12, color: "#8e8e93" }}>
-                    {p.plan_date}{p.planned_time ? ` · ${p.planned_time}` : ""}
+                    {dayNames[new Date(p.plan_date + "T00:00:00").getDay()]}
+                    {p.planned_time ? ` · ${p.planned_time}` : ""}
                   </div>
                 </div>
                 {weekTab === "completed" && <span style={{ color: "#34c759", fontWeight: 800, fontSize: 16 }}>✓</span>}

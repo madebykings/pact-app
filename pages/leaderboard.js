@@ -99,9 +99,17 @@ export default function Leaderboard() {
         if (!userIds.length) { setRows([]); setLoading(false); return; }
 
         let profiles = [];
-        const { data: ups, error: upErr } = await supabase
-          .from("user_profiles").select("user_id,display_name").in("user_id", userIds);
-        if (!upErr) profiles = ups || [];
+        try {
+          const resp = await fetch("/api/team/member-profiles", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ userIds }),
+          });
+          const json = await resp.json();
+          if (json.profiles) profiles = json.profiles;
+        } catch (e) {
+          console.warn("leaderboard member-profiles error:", e);
+        }
 
         const members = userIds.map((uid) => ({
           user_id: uid,
