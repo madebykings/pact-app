@@ -612,56 +612,72 @@ export default function Dashboard() {
         </div>
 
         {/* DAILY PROGRESS */}
-        <div style={{ background: "#1e1b4b", borderRadius: 18, padding: 18, marginBottom: 12, color: "#fff" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
-            <div style={{ fontSize: 17, fontWeight: 800 }}>Daily Progress</div>
-            <a href="/profile" style={{ color: "rgba(255,255,255,0.4)", fontSize: 22, textDecoration: "none", lineHeight: 1 }}>›</a>
-          </div>
+        {(() => {
+          const isRestDay = todayPlan.plan_type === "REST";
+          const tomorrowIsRest = tomorrowPlan.plan_type === "REST";
+          const sleepRecorded = !!(sleep?.bed_time && sleep?.wake_time);
+          const allSuppsTaken = supps.length > 0 && suppTaken === supps.length;
+          const tomorrowTimeSet = !tomorrowIsRest && !!tomorrowPlan.planned_time;
+          const waterDone = waterVal >= waterTargetMl;
+          const workoutDone = !isRestDay && todayPlan.status === "DONE";
 
-          {/* Workout */}
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 7 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 18 }}>🔥</span>
-                <span style={{ fontWeight: 600, fontSize: 15 }}>Workout</span>
-              </div>
-              <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", fontWeight: 600 }}>
-                {todayPlan.status === "DONE" ? "100%" : todayPlan.status === "CANCELLED" ? "—" : "0%"}
-              </span>
-            </div>
-            <div style={{ height: 7, borderRadius: 4, background: "rgba(255,255,255,0.12)", overflow: "hidden" }}>
-              <div style={{
-                height: "100%",
-                width: todayPlan.status === "DONE" ? "100%" : "0%",
-                background: todayPlan.status === "DONE" ? "#34c759" : "transparent",
-                borderRadius: 4,
-                transition: "width 0.5s ease",
-              }} />
-            </div>
-          </div>
+          const items = [
+            { emoji: "🌙", label: "Last night's sleep logged", done: sleepRecorded },
+            { emoji: "💊", label: "Supplements taken", done: allSuppsTaken, skip: supps.length === 0 },
+            { emoji: "⏰", label: "Tomorrow's workout time set", done: tomorrowTimeSet, skip: tomorrowIsRest },
+            { emoji: "💧", label: "Water target hit", done: waterDone },
+            { emoji: "🔥", label: "Workout done", done: workoutDone, skip: isRestDay },
+          ].filter((i) => !i.skip);
 
-          {/* Supplements */}
-          <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 7 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 18 }}>💊</span>
-                <span style={{ fontWeight: 600, fontSize: 15 }}>Supplements</span>
+          const total = items.length;
+          const done = items.filter((i) => i.done).length;
+          const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+
+          return (
+            <div style={{ background: "#1e1b4b", borderRadius: 18, padding: 18, marginBottom: 12, color: "#fff" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                <div style={{ fontSize: 17, fontWeight: 800 }}>Daily Progress</div>
+                <div style={{ fontSize: 24, fontWeight: 900, color: pct === 100 ? "#34c759" : "rgba(255,255,255,0.9)" }}>
+                  {pct}%
+                </div>
               </div>
-              <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", fontWeight: 600 }}>
-                {suppTaken} / {supps.length}
-              </span>
+
+              <div style={{ height: 8, borderRadius: 4, background: "rgba(255,255,255,0.12)", overflow: "hidden", marginBottom: 16 }}>
+                <div style={{
+                  height: "100%",
+                  width: `${pct}%`,
+                  background: pct === 100 ? "#34c759" : "#a78bfa",
+                  borderRadius: 4,
+                  transition: "width 0.5s ease",
+                }} />
+              </div>
+
+              <div style={{ display: "grid", gap: 10 }}>
+                {items.map((item) => (
+                  <div key={item.label} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{
+                      width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+                      background: item.done ? "#34c759" : "rgba(255,255,255,0.1)",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                    }}>
+                      {item.done
+                        ? <span style={{ fontSize: 13, fontWeight: 900, color: "#fff" }}>✓</span>
+                        : <span style={{ fontSize: 14 }}>{item.emoji}</span>
+                      }
+                    </div>
+                    <span style={{
+                      fontSize: 14, fontWeight: 600,
+                      color: item.done ? "rgba(255,255,255,0.45)" : "rgba(255,255,255,0.9)",
+                      textDecoration: item.done ? "line-through" : "none",
+                    }}>
+                      {item.label}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div style={{ height: 7, borderRadius: 4, background: "rgba(255,255,255,0.12)", overflow: "hidden" }}>
-              <div style={{
-                height: "100%",
-                width: supps.length > 0 ? `${(suppTaken / supps.length) * 100}%` : "0%",
-                background: suppTaken === supps.length && supps.length > 0 ? "#34c759" : "#a78bfa",
-                borderRadius: 4,
-                transition: "width 0.5s ease",
-              }} />
-            </div>
-          </div>
-        </div>
+          );
+        })()}
 
         {/* UPCOMING / COMPLETED */}
         <div style={card}>
