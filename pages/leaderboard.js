@@ -297,8 +297,8 @@ export default function Leaderboard() {
             <div style={{ marginTop: 8, lineHeight: 1.5 }}>
               • Workout done: <b>+10</b><br />
               • Set tomorrow time (first time): <b>+3</b><br />
-              • Hit water target: <b>+3</b><br />
-              • Hit sleep target: <b>+3</b><br />
+              • Hit water target: <b>+2</b><br />
+              • Hit sleep target: <b>+2</b><br />
               • Cancel: <b>-5</b>
             </div>
           </div>

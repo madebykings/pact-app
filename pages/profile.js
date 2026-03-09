@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import TopNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
 import { addDays, isoDate } from "../lib/weekTemplate";
+import { logActivityEvent } from "../lib/activityEvents";
 
 function mondayStart(d) {
   const x = new Date(d);
@@ -18,14 +19,6 @@ function safeNum(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-function uuidv4() {
-  try {
-    return crypto.randomUUID();
-  } catch (_) {
-    const s4 = () => Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1);
-    return `${s4()}${s4()}-${s4()}-${s4()}-${s4()}-${s4()}${s4()}${s4()}`;
-  }
-}
 
 async function ensureProfileRow(userId) {
   const { data: existing, error } = await supabase
@@ -90,29 +83,25 @@ export default function Profile() {
   }, []);
 
   async function ensureWorkoutDoneEvents(userId, donePlans) {
-    // For each DONE plan in this week, ensure we have a +10 activity_event.
-    // Uses the unique index: (user_id, plan_id, event_type, event_date) WHERE plan_id IS NOT NULL
+    // For each DONE plan this week, ensure a +10 activity_event exists.
+    // Uses logActivityEvent() so the UUID is deterministic (keyed on planId),
+    // identical to the one written by markDone() in dashboard.js. Idempotent.
     if (!donePlans?.length) return;
 
-    const rows = donePlans.map((p) => ({
-      id: uuidv4(),
-      user_id: userId,
-      plan_id: p.id,
-      team_id: null, // optional; dashboard logger may set this elsewhere
-      event_type: "workout_done",
-      points: 10,
-      event_date: p.plan_date,
-      meta: { source: "profile_sync" },
-    }));
-
-    // Insert with conflict ignore => no duplicates
-    const { error } = await supabase
-      .from("activity_events")
-      .insert(rows, { onConflict: "user_id,plan_id,event_type,event_date", ignoreDuplicates: true });
-
-    // If RLS blocks inserts, we just skip (points will remain off, but you’ll see error in console)
-    if (error) {
-      console.warn("ensureWorkoutDoneEvents insert blocked/failed:", error);
+    for (const p of donePlans) {
+      try {
+        await logActivityEvent({
+          userId,
+          teamId: null,
+          planId: p.id,
+          eventType: "workout_done",
+          points: 10,
+          eventDate: p.plan_date,
+          meta: { source: "profile_sync" },
+        });
+      } catch (e) {
+        console.warn("ensureWorkoutDoneEvents: failed for plan", p.id, e);
+      }
     }
   }
 
@@ -177,7 +166,7 @@ export default function Profile() {
         total = (aData || []).reduce((acc, r) => acc + Number(r.points || 0), 0);
       }
 
-      if (!total) {
+      if (!(aData || []).length) {
         const { data: pData, error: pErr } = await supabase
           .from("points_events")
           .select("points,date")

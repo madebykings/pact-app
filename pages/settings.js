@@ -2,7 +2,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import TopNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
-import { enablePush, onesignalHints } from "../lib/onesignal";
 
 const TONE_OPTIONS = [
   { value: "normal", label: "Normal" },
@@ -94,6 +93,21 @@ export default function Settings() {
   const [targetDraft, setTargetDraft] = useState("");
   const targetTimer = useRef(null);
 
+  const [waterTargetDraft, setWaterTargetDraft] = useState("");
+  const waterTargetTimer = useRef(null);
+
+  const [sleepTargetDraft, setSleepTargetDraft] = useState("");
+  const sleepTargetTimer = useRef(null);
+
+  // WhatsApp subscription state (only used when NEXT_PUBLIC_WHATSAPP_ENABLED=true)
+  const [waSub, setWaSub] = useState(null);       // { phone_e164, opted_in } | null
+  const [waPhone, setWaPhone] = useState("");
+  const [waOptedIn, setWaOptedIn] = useState(false);
+  const [waLoading, setWaLoading] = useState(false);
+  const [waMsg, setWaMsg] = useState("");
+  const [waTesting, setWaTesting] = useState(false);
+  const [waTestMsg, setWaTestMsg] = useState("");
+
   const reminderTimes = useMemo(() => {
     const t = settings?.reminder_times;
     if (!Array.isArray(t) || t.length === 0) return ["08:00", "12:00", "18:00"];
@@ -126,6 +140,8 @@ export default function Settings() {
 
     return () => {
       if (targetTimer.current) clearTimeout(targetTimer.current);
+      if (waterTargetTimer.current) clearTimeout(waterTargetTimer.current);
+      if (sleepTargetTimer.current) clearTimeout(sleepTargetTimer.current);
     };
   }, []);
 
@@ -134,9 +150,102 @@ export default function Settings() {
     if (stErr) throw stErr;
     setSettings(st || null);
     setTargetDraft(st?.target_weight_kg ?? "");
+    setWaterTargetDraft(st?.water_target_ml ?? 3000);
+    setSleepTargetDraft(st?.sleep_target_hours ?? 8);
 
     const { data: s, error: sErr } = await supabase.from("supplements").select("*").eq("user_id", userId).order("name");
     if (!sErr) setSupps(s || []);
+
+    // Load WhatsApp subscription if feature is enabled.
+    // Wrapped in try/catch: if the migration hasn't been applied yet the table won't
+    // exist and we don't want that to crash the whole settings page.
+    if (process.env.NEXT_PUBLIC_WHATSAPP_ENABLED === "true") {
+      try {
+        const { data: wa, error: waErr } = await supabase
+          .from("whatsapp_subscriptions")
+          .select("phone_e164, opted_in")
+          .eq("user_id", userId)
+          .maybeSingle();
+        if (!waErr) {
+          setWaSub(wa || null);
+          setWaPhone(wa?.phone_e164 || "");
+          setWaOptedIn(wa?.opted_in || false);
+        } else {
+          console.warn("WhatsApp subscriptions unavailable (migration not applied?):", waErr.message);
+        }
+      } catch {
+        // Silently skip — WA section will display empty
+      }
+    }
+  }
+
+  async function saveWhatsappSub() {
+    if (!user) return;
+    setWaLoading(true);
+    setWaMsg("");
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const jwt = session?.access_token;
+      if (!jwt) throw new Error("Not authenticated");
+
+      const phone = waPhone.trim();
+      if (!phone) {
+        // Remove subscription
+        await fetch("/api/whatsapp/subscribe", {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${jwt}` },
+        });
+        setWaSub(null);
+        setWaOptedIn(false);
+        setWaMsg("WhatsApp subscription removed.");
+        return;
+      }
+
+      const res = await fetch("/api/whatsapp/subscribe", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${jwt}`,
+        },
+        body: JSON.stringify({ phone, optedIn: waOptedIn }),
+      });
+
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+
+      setWaSub({ phone_e164: phone, opted_in: waOptedIn });
+      setWaMsg(waOptedIn ? "WhatsApp reminders enabled." : "Phone saved (opt-in off).");
+    } catch (e) {
+      setWaMsg(`Error: ${e?.message || String(e)}`);
+    } finally {
+      setWaLoading(false);
+    }
+  }
+
+  async function sendTestWhatsApp() {
+    setWaTesting(true);
+    setWaTestMsg("");
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const jwt = session?.access_token;
+      if (!jwt) throw new Error("Not authenticated");
+
+      const res = await fetch("/api/whatsapp/test-send", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+
+      setWaTestMsg(`Test message sent to ${body.phone} ✅`);
+    } catch (e) {
+      setWaTestMsg(`Failed: ${e?.message || String(e)}`);
+    } finally {
+      setWaTesting(false);
+    }
   }
 
   async function saveSettings(patch) {
@@ -158,6 +267,20 @@ export default function Settings() {
 
     if (targetTimer.current) clearTimeout(targetTimer.current);
     targetTimer.current = setTimeout(() => saveTargetWeightKg(val), 500);
+  }
+
+  function scheduleWaterTargetSave(val) {
+    setWaterTargetDraft(val);
+
+    if (waterTargetTimer.current) clearTimeout(waterTargetTimer.current);
+    waterTargetTimer.current = setTimeout(() => saveSettings({ water_target_ml: Number(val || 0) }), 500);
+  }
+
+  function scheduleSleepTargetSave(val) {
+    setSleepTargetDraft(val);
+
+    if (sleepTargetTimer.current) clearTimeout(sleepTargetTimer.current);
+    sleepTargetTimer.current = setTimeout(() => saveSettings({ sleep_target_hours: Number(val || 0) }), 500);
   }
 
   async function saveTargetWeightKg(val) {
@@ -191,47 +314,6 @@ export default function Settings() {
       return;
     }
     await refresh(user.id);
-  }
-
-  async function subscribePush() {
-    if (!user) return;
-
-    const permBefore = typeof Notification !== "undefined" ? Notification.permission : "default";
-
-    const res = await enablePush();
-
-    if (res.ok && res.id) {
-      // keep 1 device per user
-      await supabase.from("push_devices").delete().eq("user_id", user.id);
-      const { error } = await supabase.from("push_devices").insert({
-        user_id: user.id,
-        onesignal_player_id: res.id,
-      });
-      if (error) console.warn("push_devices insert failed:", error.message);
-
-      alert("Push enabled ✅");
-      return;
-    }
-
-    const { isIOS, isStandalone } = onesignalHints();
-    if (isIOS && !isStandalone) {
-      alert("On iPhone/iPad: Add to Home Screen first, then enable push.");
-      return;
-    }
-
-    const permAfter = typeof Notification !== "undefined" ? Notification.permission : "default";
-
-    if (permAfter === "denied" || permBefore === "denied") {
-      alert("Push is blocked. Allow notifications for this site in your browser settings, then try again.");
-      return;
-    }
-
-    if (permAfter === "default") {
-      alert("You dismissed the browser prompt (or it didn’t show). Click Enable again and accept. If no prompt appears, check site notification settings.");
-      return;
-    }
-
-    alert(res.reason || "Push not enabled.");
   }
 
   async function logout() {
@@ -285,7 +367,10 @@ export default function Settings() {
 
         {/* Reminder Times */}
         <div style={{ padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12, marginBottom: 16 }}>
-          <div style={{ fontSize: 14, opacity: 0.8 }}>Reminder times</div>
+          <div style={{ fontSize: 14, opacity: 0.8 }}>
+            Reminder times
+            <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.6 }}>— sent via WhatsApp</span>
+          </div>
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
             {reminderTimes.map((t, i) => (
@@ -313,8 +398,8 @@ export default function Settings() {
               <div style={{ fontSize: 13, opacity: 0.75 }}>Water target (ml)</div>
               <input
                 type="number"
-                value={settings.water_target_ml ?? 3000}
-                onChange={(e) => saveSettings({ water_target_ml: Number(e.target.value || 0) })}
+                value={waterTargetDraft}
+                onChange={(e) => scheduleWaterTargetSave(e.target.value)}
                 style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 6 }}
               />
             </div>
@@ -324,8 +409,8 @@ export default function Settings() {
               <input
                 type="number"
                 step="0.5"
-                value={settings.sleep_target_hours ?? 8}
-                onChange={(e) => saveSettings({ sleep_target_hours: Number(e.target.value || 0) })}
+                value={sleepTargetDraft}
+                onChange={(e) => scheduleSleepTargetSave(e.target.value)}
                 style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 6 }}
               />
             </div>
@@ -402,14 +487,74 @@ export default function Settings() {
           </div>
         </div>
 
-        {/* Push */}
+        {/* WhatsApp reminders */}
         <div style={{ padding: 14, border: "1px solid rgba(0,0,0,.08)", borderRadius: 12 }}>
-          <div style={{ fontSize: 14, opacity: 0.8 }}>Push notifications</div>
-          <button style={{ width: "100%", padding: 12, marginTop: 10, fontWeight: 900 }} onClick={subscribePush}>
-            Enable push
-          </button>
-          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
-            If you don’t see a prompt, it was dismissed or blocked — browser settings control this.
+            <div style={{ fontSize: 14, opacity: 0.8 }}>WhatsApp reminders</div>
+
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 13, opacity: 0.75 }}>Phone number (E.164 format)</div>
+              <input
+                type="tel"
+                value={waPhone}
+                onChange={(e) => { setWaPhone(e.target.value); setWaMsg(""); }}
+                placeholder="+447700900123"
+                style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 6 }}
+              />
+              <div style={{ marginTop: 4, fontSize: 12, opacity: 0.65 }}>
+                Include country code, e.g. +44 for UK. Leave blank to remove.
+              </div>
+            </div>
+
+            <label style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 14, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={waOptedIn}
+                onChange={(e) => { setWaOptedIn(e.target.checked); setWaMsg(""); }}
+                style={{ width: 18, height: 18 }}
+              />
+              <span style={{ fontSize: 14 }}>
+                I consent to receive WhatsApp reminders from Pact
+              </span>
+            </label>
+
+            <button
+              style={{ width: "100%", padding: 12, marginTop: 14, fontWeight: 900 }}
+              onClick={saveWhatsappSub}
+              disabled={waLoading}
+            >
+              {waLoading ? "Saving…" : "Save WhatsApp settings"}
+            </button>
+
+            {waMsg && (
+              <div style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }}>{waMsg}</div>
+            )}
+
+            {waSub?.opted_in && (
+              <div style={{ marginTop: 10, fontSize: 12, opacity: 0.65 }}>
+                Reminders active for: <b>{waSub.phone_e164}</b>. Times are set in Reminder times above.
+              </div>
+            )}
+
+            {waSub?.opted_in && (
+              <div style={{ marginTop: 14 }}>
+                <button
+                  style={{ width: "100%", padding: 12, fontWeight: 700 }}
+                  onClick={sendTestWhatsApp}
+                  disabled={waTesting}
+                >
+                  {waTesting ? "Sending…" : "Send test message"}
+                </button>
+                {waTestMsg && (
+                  <div style={{ marginTop: 8, fontSize: 13, opacity: 0.85 }}>{waTestMsg}</div>
+                )}
+              </div>
+            )}
+
+            <div style={{ marginTop: 14, fontSize: 12, opacity: 0.6 }}>
+              <b>Sandbox:</b> Before saving your number, message the Twilio sandbox number with
+              the join keyword (e.g. <i>join example-word</i>) from the phone you're registering.
+              Then save your number here and send a test message to confirm.
+            </div>
           </div>
         </div>
       </div>

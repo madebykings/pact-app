@@ -1,5 +1,5 @@
 // pages/dashboard.js
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import TopNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
 import { addDays, isoDate, planTypeForDate } from "../lib/weekTemplate";
@@ -75,6 +75,8 @@ export default function Dashboard() {
 
   const [errMsg, setErrMsg] = useState("");
 
+  const tomorrowTimeTimer = useRef(null);
+
   const today = useMemo(() => new Date(), []);
   const tomorrow = useMemo(() => addDays(today, 1), [today]);
   const todayStr = isoDate(today);
@@ -102,6 +104,9 @@ export default function Dashboard() {
         setErrMsg(e?.message || "Failed to load.");
       }
     })();
+    return () => {
+      if (tomorrowTimeTimer.current) clearTimeout(tomorrowTimeTimer.current);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -142,6 +147,7 @@ export default function Dashboard() {
         {
           user_id: userId,
           mode: "solo",
+          tone: "normal",
           timezone: "Europe/London",
           water_target_ml: 3000,
           sleep_target_hours: 8,
@@ -656,7 +662,11 @@ export default function Dashboard() {
           <input
             type="time"
             value={tomorrowPlan.planned_time || ""}
-            onChange={(e) => setTomorrowTime(e.target.value)}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (tomorrowTimeTimer.current) clearTimeout(tomorrowTimeTimer.current);
+              tomorrowTimeTimer.current = setTimeout(() => setTomorrowTime(val), 400);
+            }}
             style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 10 }}
           />
         ) : (
@@ -685,7 +695,7 @@ export default function Dashboard() {
           {weekPlans
             .filter((p) => {
               if (weekTab === "completed") return p.status === "DONE";
-              return p.status !== "DONE" && p.plan_date >= todayStr;
+              return p.status !== "DONE" && p.status !== "CANCELLED" && p.plan_date >= todayStr;
             })
             .map((p) => (
               <div key={p.id} style={{ padding: 12, border: "1px solid #eee", borderRadius: 12 }}>
