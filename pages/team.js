@@ -104,11 +104,15 @@ export default function Team() {
     const userIds = (tm || []).map((x) => x.user_id);
     let profiles = [];
     if (userIds.length) {
-      const { data: ups, error: upErr } = await supabase
-        .from("user_profiles")
-        .select("user_id,display_name")
-        .in("user_id", userIds);
-      if (!upErr) profiles = ups || [];
+      try {
+        const resp = await fetch("/api/team/member-profiles", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userIds }),
+        });
+        const json = await resp.json();
+        if (json.profiles) profiles = json.profiles;
+      } catch (_) {}
     }
 
     const mem = (tm || [])
