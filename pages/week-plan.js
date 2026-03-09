@@ -1,8 +1,37 @@
 // pages/week-plan.js
 import { useEffect, useMemo, useState } from "react";
-import TopNav from "../components/Nav";
+import BottomNav from "../components/Nav";
 import { supabase } from "../lib/supabaseClient";
 import { addDays, isoDate } from "../lib/weekTemplate";
+
+const PRIMARY = "#5B4FE9";
+const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
+
+const pageStyle = {
+  background: "#f2f2f7",
+  minHeight: "100vh",
+  fontFamily: FONT,
+  paddingBottom: 88,
+};
+
+const card = {
+  background: "#fff",
+  borderRadius: 18,
+  padding: 18,
+  marginBottom: 12,
+  boxShadow: "0 1px 3px rgba(0,0,0,0.07)",
+};
+
+const inputStyle = {
+  width: "100%",
+  padding: "11px 13px",
+  fontSize: 15,
+  borderRadius: 11,
+  border: "1.5px solid #e5e5ea",
+  background: "#f9f9f9",
+  boxSizing: "border-box",
+  fontFamily: FONT,
+};
 
 const ALL_TYPES = [
   { value: "REST", label: "Rest day" },
@@ -18,6 +47,20 @@ const ALL_TYPES = [
   { value: "MOBILITY", label: "Mobility" },
   { value: "OTHER", label: "Other" },
 ];
+
+const PLAN_EMOJI = {
+  HIIT: "🔥", SPIN: "🚴", WEIGHTS: "🏋️", REST: "😴",
+  RUN: "🏃", WALK: "🚶", SWIM: "🏊", HILLWALK: "🏔️",
+  YOGA: "🧘", PILATES: "🤸", MOBILITY: "🦵", OTHER: "⭐",
+};
+
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const FULL_DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+function getDayName(dateStr, full = false) {
+  const d = new Date(dateStr + "T12:00:00");
+  return full ? FULL_DAY_NAMES[d.getDay()] : DAY_NAMES[d.getDay()];
+}
 
 function clampTime(t) {
   if (!t) return "";
@@ -40,9 +83,8 @@ export default function WeekPlan() {
 
   const weekStart = useMemo(() => {
     const d = new Date(today);
-    const day = d.getDay(); // 0=Sun
-    const diff = day === 0 ? -6 : 1 - day; // Monday
-    d.setDate(d.getDate() + diff);
+    const day = d.getDay();
+    d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day));
     d.setHours(0, 0, 0, 0);
     return d;
   }, [today]);
@@ -55,7 +97,6 @@ export default function WeekPlan() {
   const allowedTypes = useMemo(() => {
     const inc = Array.isArray(settings?.included_activities) ? settings.included_activities : [];
     const set = new Set(inc);
-    // Always allow REST + OTHER
     return ALL_TYPES.filter((t) => t.value === "REST" || t.value === "OTHER" || set.has(t.value));
   }, [settings?.included_activities]);
 
@@ -71,27 +112,18 @@ export default function WeekPlan() {
       try {
         const { data, error } = await supabase.auth.getUser();
         if (error) throw error;
-        if (!data?.user) {
-          window.location.href = "/";
-          return;
-        }
+        if (!data?.user) { window.location.href = "/"; return; }
         setUser(data.user);
 
         const { data: st, error: stErr } = await supabase
-          .from("user_settings")
-          .select("*")
-          .eq("user_id", data.user.id)
-          .maybeSingle();
+          .from("user_settings").select("*").eq("user_id", data.user.id).maybeSingle();
         if (stErr) throw stErr;
         setSettings(st || null);
 
         if (st?.mode === "team" && st?.team_id) {
           const { data: tm, error: tmErr } = await supabase
-            .from("team_members")
-            .select("role")
-            .eq("team_id", st.team_id)
-            .eq("user_id", data.user.id)
-            .maybeSingle();
+            .from("team_members").select("role")
+            .eq("team_id", st.team_id).eq("user_id", data.user.id).maybeSingle();
           if (!tmErr) setRole(tm?.role || "member");
         } else {
           setRole(null);
@@ -107,8 +139,6 @@ export default function WeekPlan() {
   }, []);
 
   async function ensureRows(userId) {
-    // Create rows if missing (relies on unique user_id+plan_date)
-    // IMPORTANT: do NOT overwrite existing plan rows.
     for (const d of dates) {
       await supabase.from("plans").upsert(
         { user_id: userId, plan_date: d, plan_type: "REST", status: "PLANNED" },
@@ -119,11 +149,7 @@ export default function WeekPlan() {
 
   async function refresh(userId) {
     const { data, error } = await supabase
-      .from("plans")
-      .select("*")
-      .eq("user_id", userId)
-      .in("plan_date", dates)
-      .order("plan_date");
+      .from("plans").select("*").eq("user_id", userId).in("plan_date", dates).order("plan_date");
     if (error) throw error;
     setPlans(data || []);
   }
@@ -136,88 +162,119 @@ export default function WeekPlan() {
     await refresh(user.id);
   }
 
-  async function logout() {
-    await supabase.auth.signOut();
-    window.location.href = "/";
-  }
-
   if (err) {
     return (
-      <div>
-        <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
-          <TopNav active="plan" onLogout={logout} />
-          <h2 style={{ marginTop: 14 }}>Week plan</h2>
-          <div>
-            <b>Error:</b> {err}
-          </div>
-          <button style={{ marginTop: 12 }} onClick={logout}>
-            Logout
-          </button>
-        </div>
+      <div style={pageStyle}>
+        <div style={{ padding: 18, color: "#c00" }}><b>Error:</b> {err}</div>
+        <BottomNav active="plan" />
       </div>
     );
   }
 
   if (!settings) {
     return (
-      <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
-        <TopNav active="plan" onLogout={logout} />
-        <div style={{ marginTop: 14 }}>Loading…</div>
+      <div style={pageStyle}>
+        <div style={{ padding: "40px 18px", textAlign: "center", color: "#8e8e93" }}>Loading…</div>
+        <BottomNav active="plan" />
       </div>
     );
   }
 
   return (
-    <div style={{ padding: 18, fontFamily: "system-ui", maxWidth: 520, margin: "0 auto" }}>
-      <TopNav active="plan" onLogout={logout} />
-
-      <h2 style={{ margin: "14px 0 0" }}>Week plan</h2>
-
-      {settings.mode === "team" && (
-        <div style={{ marginTop: 10, fontSize: 13, opacity: 0.8 }}>
-          Team mode: {canEdit ? "You can edit (leader)." : "Read-only (only leader can edit)."}
+    <div style={pageStyle}>
+      {/* Header */}
+      <div style={{ padding: "24px 18px 4px" }}>
+        <div style={{ fontSize: 13, color: "#8e8e93", marginBottom: 2 }}>
+          {settings.mode === "team"
+            ? canEdit ? "Edit this week · Team Leader" : "This week · Read only"
+            : "Your week"}
         </div>
-      )}
-
-      <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
-        {plans.map((p) => (
-          <div key={p.id} style={{ padding: 14, border: "1px solid #ddd", borderRadius: 12 }}>
-            <div style={{ fontSize: 13, opacity: 0.8 }}>{p.plan_date}</div>
-
-            <div style={{ marginTop: 10, fontWeight: 900, fontSize: 14, opacity: 0.8 }}>Workout</div>
-            <select
-              value={p.plan_type}
-              disabled={!canEdit}
-              onChange={(e) => {
-                const nextType = e.target.value;
-                const patch = { plan_type: nextType };
-                if (nextType === "REST") patch.planned_time = null;
-                setPlan(p.id, patch);
-              }}
-              style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 8 }}
-            >
-              {allowedTypes.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
-
-            <div style={{ marginTop: 12, fontWeight: 900, fontSize: 14, opacity: 0.8 }}>Time</div>
-            {p.plan_type === "REST" ? (
-              <div style={{ marginTop: 8, opacity: 0.75 }}>Rest day. No time required.</div>
-            ) : (
-              <input
-                type="time"
-                value={p.planned_time || ""}
-                disabled={!canEdit}
-                onChange={(e) => setPlan(p.id, { planned_time: clampTime(e.target.value) })}
-                style={{ width: "100%", padding: 12, fontSize: 16, marginTop: 8 }}
-              />
-            )}
-          </div>
-        ))}
+        <div style={{ fontSize: 28, fontWeight: 800, color: "#111", letterSpacing: -0.5 }}>Week Plan</div>
       </div>
+
+      <div style={{ padding: "8px 18px 0" }}>
+        {!canEdit && settings.mode === "team" && (
+          <div style={{ ...card, background: "rgba(91,79,233,0.06)", padding: "12px 16px" }}>
+            <div style={{ fontSize: 13, color: PRIMARY, fontWeight: 600 }}>
+              Read-only — only the team leader can make changes.
+            </div>
+          </div>
+        )}
+
+        {plans.map((p) => {
+          const isToday = p.plan_date === todayStr;
+          const dayName = getDayName(p.plan_date, true);
+          const emoji = PLAN_EMOJI[p.plan_type] || "⭐";
+
+          return (
+            <div
+              key={p.id}
+              style={{
+                ...card,
+                border: isToday ? `2px solid ${PRIMARY}` : "2px solid transparent",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+                <div>
+                  <div style={{
+                    fontSize: 11, fontWeight: 700, letterSpacing: 1, marginBottom: 4,
+                    color: isToday ? PRIMARY : "#8e8e93",
+                  }}>
+                    {isToday ? "TODAY · " : ""}{dayName.toUpperCase()} · {p.plan_date}
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 800, color: "#111" }}>
+                    {p.plan_type}
+                    {p.planned_time && (
+                      <span style={{ fontSize: 14, fontWeight: 500, color: "#8e8e93", marginLeft: 8 }}>
+                        {p.planned_time}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <span style={{ fontSize: 28 }}>{emoji}</span>
+              </div>
+
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 12, color: "#8e8e93", marginBottom: 6 }}>Workout type</div>
+                <select
+                  value={p.plan_type}
+                  disabled={!canEdit}
+                  onChange={(e) => {
+                    const nextType = e.target.value;
+                    const patch = { plan_type: nextType };
+                    if (nextType === "REST") patch.planned_time = null;
+                    setPlan(p.id, patch);
+                  }}
+                  style={{ ...inputStyle, appearance: "none", WebkitAppearance: "none" }}
+                >
+                  {allowedTypes.map((t) => (
+                    <option key={t.value} value={t.value}>{t.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              {p.plan_type !== "REST" && (
+                <div>
+                  <div style={{ fontSize: 12, color: "#8e8e93", marginBottom: 6 }}>Time</div>
+                  <input
+                    type="time"
+                    value={p.planned_time || ""}
+                    disabled={!canEdit}
+                    onChange={(e) => setPlan(p.id, { planned_time: clampTime(e.target.value) })}
+                    style={inputStyle}
+                  />
+                </div>
+              )}
+
+              {p.plan_type === "REST" && (
+                <div style={{ fontSize: 13, color: "#8e8e93" }}>Rest day — no time needed.</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <BottomNav active="plan" />
     </div>
   );
 }
