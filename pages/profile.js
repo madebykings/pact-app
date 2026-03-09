@@ -221,9 +221,23 @@ export default function Profile() {
         setWeightStatus({ thisWeek: thisWeight, lastWeek: lastWeight, delta });
       }
 
-      if (targetWeight != null && thisWeight != null) {
-        const toGo = thisWeight - targetWeight;
-        setTargetProgress({ current: thisWeight, target: targetWeight, toGo });
+      // For target progress, use most recent weigh-in overall (not just this week)
+      let latestWeight = thisWeight;
+      if (latestWeight == null) {
+        const { data: latestRows, error: latestErr } = await supabase
+          .from("weigh_ins")
+          .select("weight_kg,weigh_date")
+          .eq("user_id", userId)
+          .order("weigh_date", { ascending: false })
+          .limit(1);
+        if (!latestErr && latestRows?.[0]) {
+          latestWeight = safeNum(latestRows[0].weight_kg);
+        }
+      }
+
+      if (targetWeight != null && latestWeight != null) {
+        const toGo = latestWeight - targetWeight;
+        setTargetProgress({ current: latestWeight, target: targetWeight, toGo });
       } else {
         setTargetProgress(null);
       }
