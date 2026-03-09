@@ -555,7 +555,6 @@ export default function Settings() {
               the join keyword (e.g. <i>join example-word</i>) from the phone you're registering.
               Then save your number here and send a test message to confirm.
             </div>
-          </div>
         </div>
       </div>
     </div>
