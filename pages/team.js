@@ -130,7 +130,10 @@ export default function Team() {
         });
         const json = await resp.json();
         if (json.profiles) profiles = json.profiles;
-      } catch (_) {}
+        else console.warn("member-profiles API error:", json);
+      } catch (e) {
+        console.warn("member-profiles fetch error:", e);
+      }
     }
 
     const mem = (tm || [])

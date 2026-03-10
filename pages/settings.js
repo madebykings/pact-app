@@ -169,6 +169,12 @@ export default function Settings() {
       .from("supplements").select("*").eq("user_id", userId).order("name");
     if (!sErr) setSupps(s || []);
 
+    const { data: acts, error: actsErr } = await supabase
+      .from("activity_types").select("key,label").order("sort");
+    if (!actsErr && acts?.length) {
+      setActivityOptions(acts.map((a) => ({ value: a.key, label: a.label })));
+    }
+
     if (process.env.NEXT_PUBLIC_WHATSAPP_ENABLED === "true") {
       try {
         const { data: wa, error: waErr } = await supabase
