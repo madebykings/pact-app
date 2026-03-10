@@ -6,6 +6,7 @@ const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-ser
 
 export default function Home() {
   const [tab, setTab] = useState("signin"); // "signin" | "signup"
+  const [forgot, setForgot] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -21,7 +22,20 @@ export default function Home() {
   }, []);
 
   function reset() {
-    setMsg(""); setErr(""); setName(""); setPassword(""); setConfirm("");
+    setMsg(""); setErr(""); setName(""); setPassword(""); setConfirm(""); setForgot(false);
+  }
+
+  async function sendReset(e) {
+    e.preventDefault();
+    setErr(""); setMsg(""); setLoading(true);
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${siteUrl}/reset-password`,
+    });
+    setLoading(false);
+    if (error) { setErr(error.message); return; }
+    setMsg("Check your email for a password reset link.");
+    setForgot(false);
   }
 
   async function signIn(e) {
@@ -154,7 +168,7 @@ export default function Home() {
           </div>
         )}
 
-        {tab === "signin" ? (
+        {tab === "signin" && !forgot ? (
           <form onSubmit={signIn} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <input
               type="email"
@@ -174,6 +188,37 @@ export default function Home() {
             />
             <button type="submit" disabled={loading} style={btnStyle}>
               {loading ? "Signing in…" : "Sign in"}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setErr(""); setMsg(""); setForgot(true); }}
+              style={{ background: "none", border: "none", color: "#8e8e93", fontSize: 14, cursor: "pointer", padding: "4px 0", fontFamily: FONT }}
+            >
+              Forgot password?
+            </button>
+          </form>
+        ) : tab === "signin" && forgot ? (
+          <form onSubmit={sendReset} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <p style={{ margin: "0 0 4px", fontSize: 14, color: "#3c3c43" }}>
+              Enter your email and we&apos;ll send a link to reset your password.
+            </p>
+            <input
+              type="email"
+              placeholder="Email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              style={inputStyle}
+            />
+            <button type="submit" disabled={loading} style={btnStyle}>
+              {loading ? "Sending…" : "Send reset link"}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setErr(""); setMsg(""); setForgot(false); }}
+              style={{ background: "none", border: "none", color: "#8e8e93", fontSize: 14, cursor: "pointer", padding: "4px 0", fontFamily: FONT }}
+            >
+              Back to sign in
             </button>
           </form>
         ) : (
