@@ -157,10 +157,11 @@ export default function Settings() {
   }, []);
 
   async function refresh(userId) {
-    const { data: st, error: stErr } = await supabase
+    const { data: stRaw, error: stErr } = await supabase
       .from("user_settings").select("*").eq("user_id", userId).maybeSingle();
     if (stErr) throw stErr;
-    setSettings(st || null);
+    let st = stRaw || null;
+    setSettings(st);
     setTargetDraft(st?.target_weight_kg ?? "");
     setWaterTargetDraft(st?.water_target_ml ?? 3000);
     setSleepTargetDraft(st?.sleep_target_hours ?? 8);
@@ -173,6 +174,16 @@ export default function Settings() {
       .from("activity_types").select("key,label").order("sort");
     if (!actsErr && acts?.length) {
       setActivityOptions(acts.map((a) => ({ value: a.key, label: a.label })));
+
+      // Auto-include any new activities that aren't in the user's saved list
+      const currentIncluded = new Set(st?.included_activities || []);
+      const newKeys = acts.map((a) => a.key).filter((k) => !currentIncluded.has(k));
+      if (newKeys.length > 0) {
+        const updated = [...(st?.included_activities || []), ...newKeys];
+        await supabase.from("user_settings").update({ included_activities: updated }).eq("user_id", userId);
+        st = { ...st, included_activities: updated };
+        setSettings(st);
+      }
     }
 
     if (process.env.NEXT_PUBLIC_WHATSAPP_ENABLED === "true") {

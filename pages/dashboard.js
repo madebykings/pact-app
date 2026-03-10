@@ -505,10 +505,8 @@ export default function Dashboard() {
   const waterPct = Math.min(100, (waterVal / waterTargetMl) * 100);
   const suppTaken = Object.keys(takenMap).length;
 
-  const upcomingPlans = weekPlans.filter(
-    (p) => p.status !== "DONE" && p.status !== "CANCELLED" && p.plan_date >= todayStr
-  );
-  const completedPlans = weekPlans.filter((p) => p.status === "DONE");
+  const upcomingPlans = weekPlans.filter((p) => p.plan_date >= todayStr);
+  const pastPlans = weekPlans.filter((p) => p.plan_date < todayStr);
 
   return (
     <div style={pageStyle}>
@@ -708,7 +706,7 @@ export default function Dashboard() {
           );
         })()}
 
-        {/* UPCOMING / COMPLETED */}
+        {/* UPCOMING / PAST */}
         <div style={card}>
           <div style={{ display: "flex", gap: 0, marginBottom: 14, background: "#f2f2f7", borderRadius: 12, padding: 3 }}>
             <button
@@ -724,42 +722,54 @@ export default function Dashboard() {
               Upcoming
             </button>
             <button
-              onClick={() => setWeekTab("completed")}
+              onClick={() => setWeekTab("past")}
               style={{
                 flex: 1, padding: "8px 0", fontWeight: 700, fontSize: 13,
                 border: "none", borderRadius: 10, cursor: "pointer", fontFamily: FONT,
-                background: weekTab === "completed" ? "#fff" : "transparent",
-                color: weekTab === "completed" ? "#111" : "#8e8e93",
-                boxShadow: weekTab === "completed" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                background: weekTab === "past" ? "#fff" : "transparent",
+                color: weekTab === "past" ? "#111" : "#8e8e93",
+                boxShadow: weekTab === "past" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
               }}
             >
-              Completed
+              Past
             </button>
           </div>
 
           <div style={{ display: "grid", gap: 8 }}>
-            {(weekTab === "upcoming" ? upcomingPlans : completedPlans).map((p) => (
-              <div
-                key={p.id}
-                style={{
-                  display: "flex", alignItems: "center", gap: 12,
-                  padding: "10px 12px", background: "#f9f9f9", borderRadius: 12,
-                }}
-              >
-                <span style={{ fontSize: 22 }}>{PLAN_EMOJI[p.plan_type] || "🏃"}</span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 700, fontSize: 14, color: "#111" }}>{p.plan_type}</div>
-                  <div style={{ fontSize: 12, color: "#8e8e93" }}>
-                    {dayNames[new Date(p.plan_date + "T00:00:00").getDay()]}
-                    {p.planned_time ? ` · ${p.planned_time}` : ""}
+            {(weekTab === "upcoming" ? upcomingPlans : pastPlans).map((p) => {
+              const isDone = p.status === "DONE";
+              const isCancelled = p.status === "CANCELLED";
+              const isRest = p.plan_type === "REST";
+              return (
+                <div
+                  key={p.id}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 12,
+                    padding: "10px 12px", borderRadius: 12,
+                    background: isDone ? "rgba(52,199,89,0.08)" : isCancelled ? "rgba(255,69,58,0.06)" : "#f9f9f9",
+                    border: isDone ? "1px solid rgba(52,199,89,0.25)" : isCancelled ? "1px solid rgba(255,69,58,0.2)" : "1px solid transparent",
+                  }}
+                >
+                  <span style={{ fontSize: 22 }}>{PLAN_EMOJI[p.plan_type] || "🏃"}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: isDone ? "#1a7a37" : isCancelled ? "#c0392b" : "#111" }}>
+                      {p.plan_type}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#8e8e93" }}>
+                      {dayNames[new Date(p.plan_date + "T00:00:00").getDay()]}
+                      {p.planned_time ? ` · ${p.planned_time}` : ""}
+                      {isCancelled && p.cancel_reason ? ` · ${p.cancel_reason}` : ""}
+                    </div>
                   </div>
+                  {isDone && <span style={{ color: "#34c759", fontWeight: 800, fontSize: 16 }}>✓</span>}
+                  {isCancelled && <span style={{ color: "#ff453a", fontWeight: 800, fontSize: 15 }}>✕</span>}
+                  {isRest && !isDone && !isCancelled && <span style={{ fontSize: 15, opacity: 0.4 }}>😴</span>}
                 </div>
-                {weekTab === "completed" && <span style={{ color: "#34c759", fontWeight: 800, fontSize: 16 }}>✓</span>}
-              </div>
-            ))}
-            {(weekTab === "upcoming" ? upcomingPlans : completedPlans).length === 0 && (
+              );
+            })}
+            {(weekTab === "upcoming" ? upcomingPlans : pastPlans).length === 0 && (
               <div style={{ color: "#8e8e93", fontSize: 14, textAlign: "center", padding: "14px 0" }}>
-                {weekTab === "completed" ? "No completed workouts yet." : "No upcoming workouts."}
+                {weekTab === "past" ? "Nothing yet this week." : "No upcoming workouts."}
               </div>
             )}
           </div>
