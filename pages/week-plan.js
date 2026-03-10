@@ -76,6 +76,7 @@ export default function WeekPlan() {
   const [settings, setSettings] = useState(null);
   const [role, setRole] = useState(null);
   const [planUserId, setPlanUserId] = useState(null);
+  const [teamId, setTeamId] = useState(null);
   const [plans, setPlans] = useState([]);
   const [activityTypes, setActivityTypes] = useState([]);
   const [err, setErr] = useState("");
@@ -130,29 +131,25 @@ export default function WeekPlan() {
         let resolvedPlanUserId = data.user.id;
 
         if (st?.mode === "team" && st?.team_id) {
+          setTeamId(st.team_id);
           const { data: tm, error: tmErr } = await supabase
             .from("team_members").select("role")
             .eq("team_id", st.team_id).eq("user_id", data.user.id).maybeSingle();
           userRole = !tmErr ? (tm?.role || "member") : "member";
           setRole(userRole);
-
-          if (userRole !== "owner") {
-            // Members view the owner's plan (read-only)
-            const { data: ownerRow } = await supabase
-              .from("team_members").select("user_id")
-              .eq("team_id", st.team_id).eq("role", "owner").maybeSingle();
-            if (ownerRow?.user_id) resolvedPlanUserId = ownerRow.user_id;
-          }
         } else {
           setRole(null);
         }
 
         setPlanUserId(resolvedPlanUserId);
 
-        if (resolvedPlanUserId === data.user.id) {
+        if (userRole !== "owner" && st?.mode === "team" && st?.team_id) {
+          // Members fetch owner's plans via API (bypasses RLS)
+          await refreshMember(st.team_id, data.user.id);
+        } else {
           await ensureRows(data.user.id);
+          await refresh(resolvedPlanUserId);
         }
-        await refresh(resolvedPlanUserId);
       } catch (e) {
         setErr(e?.message || String(e));
       }
@@ -169,6 +166,23 @@ export default function WeekPlan() {
     }
   }
 
+  async function getJwt() {
+    const { data: { session } } = await supabase.auth.getSession();
+    return session?.access_token;
+  }
+
+  async function refreshMember(tid, uid) {
+    const jwt = await getJwt();
+    const r = await fetch(
+      `/api/team/week-plans?teamId=${tid}&dates=${dates.join(",")}`,
+      { headers: { Authorization: `Bearer ${jwt}` } }
+    );
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error);
+    setPlans(body.plans || []);
+    if (body.ownerUserId) setPlanUserId(body.ownerUserId);
+  }
+
   async function refresh(userId) {
     const { data, error } = await supabase
       .from("plans").select("*").eq("user_id", userId).in("plan_date", dates).order("plan_date");
@@ -181,7 +195,12 @@ export default function WeekPlan() {
     if (!canEdit) return alert("Only the team leader can edit the plan.");
     const { error } = await supabase.from("plans").update({ ...patch }).eq("id", planId);
     if (error) alert(error.message);
-    await refresh(planUserId || user.id);
+    // After owner edits, refresh via API so the plans stay in sync
+    if (role === "owner" && teamId) {
+      await refreshMember(teamId, user.id);
+    } else {
+      await refresh(planUserId || user.id);
+    }
   }
 
   if (err) {
