@@ -38,7 +38,7 @@ const TONE_OPTIONS = [
   { value: "savage", label: "Savage" },
 ];
 
-const ACTIVITY_OPTIONS = [
+const ACTIVITY_FALLBACK = [
   { value: "WALK", label: "Walk" },
   { value: "RUN", label: "Run" },
   { value: "SPIN", label: "Spin" },
@@ -103,6 +103,7 @@ export default function Settings() {
   const [user, setUser] = useState(null);
   const [settings, setSettings] = useState(null);
   const [supps, setSupps] = useState([]);
+  const [activityOptions, setActivityOptions] = useState(ACTIVITY_FALLBACK);
   const [err, setErr] = useState("");
 
   const [targetDraft, setTargetDraft] = useState("");
@@ -120,14 +121,19 @@ export default function Settings() {
   const [waTesting, setWaTesting] = useState(false);
   const [waTestMsg, setWaTestMsg] = useState("");
 
-  const reminderTimes = useMemo(() => {
-    const t = settings?.reminder_times;
-    if (!Array.isArray(t) || t.length === 0) return ["08:00", "12:00", "18:00"];
-    const norm = t.map(normalizeTime).filter(Boolean);
-    return (norm.length ? norm : ["08:00", "12:00", "18:00"]).slice(0, 5);
-  }, [settings?.reminder_times]);
-
   const included = useMemo(() => new Set(settings?.included_activities || []), [settings?.included_activities]);
+
+  useEffect(() => {
+    // Load activity types from API (falls back to hardcoded if table not yet seeded)
+    fetch("/api/activities")
+      .then((r) => r.json())
+      .then(({ activities }) => {
+        if (activities?.length) {
+          setActivityOptions(activities.map((a) => ({ value: a.key, label: a.label })));
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -355,36 +361,13 @@ export default function Settings() {
           </div>
         </div>
 
-        {/* Reminder Times */}
-        <div style={card}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#8e8e93", letterSpacing: 1, marginBottom: 10 }}>
-            REMINDER TIMES
-            <span style={{ marginLeft: 8, fontWeight: 400, textTransform: "none", letterSpacing: 0, fontSize: 12, color: "#8e8e93" }}>via WhatsApp</span>
-          </div>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            {reminderTimes.map((t, i) => (
-              <input
-                key={i}
-                type="time"
-                value={t}
-                onChange={(e) => {
-                  const next = [...reminderTimes];
-                  next[i] = normalizeTime(e.target.value);
-                  saveSettings({ reminder_times: next });
-                }}
-                style={{ ...inputStyle, width: "auto", flex: "0 0 auto" }}
-              />
-            ))}
-          </div>
-        </div>
-
         {/* Workout types */}
         <div style={card}>
           <div style={{ fontSize: 11, fontWeight: 700, color: "#8e8e93", letterSpacing: 1, marginBottom: 12 }}>
             WORKOUT TYPES
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {ACTIVITY_OPTIONS.map((a) => {
+            {activityOptions.map((a) => {
               const on = included.has(a.value);
               return (
                 <button
