@@ -166,9 +166,25 @@ export default function Settings() {
     setWaterTargetDraft(st?.water_target_ml ?? 3000);
     setSleepTargetDraft(st?.sleep_target_hours ?? 8);
 
+    let suppsData = [];
     const { data: s, error: sErr } = await supabase
       .from("supplements").select("*").eq("user_id", userId).order("name");
-    if (!sErr) setSupps(s || []);
+    if (!sErr) suppsData = s || [];
+
+    // Auto-add any supplement_templates not yet in user's supplements (matched by name)
+    const { data: tmpl } = await supabase.from("supplement_templates").select("*").order("sort");
+    if (tmpl?.length) {
+      const existingNames = new Set(suppsData.map((x) => x.name.toLowerCase()));
+      const newRows = tmpl
+        .filter((t) => !existingNames.has(t.name.toLowerCase()))
+        .map((t) => ({ user_id: userId, active: true, name: t.name, rule_type: t.rule_type, window_start: t.window_start || null, window_end: t.window_end || null, offset_minutes: t.offset_minutes || null }));
+      if (newRows.length) {
+        await supabase.from("supplements").insert(newRows);
+        const { data: refreshed } = await supabase.from("supplements").select("*").eq("user_id", userId).order("name");
+        if (refreshed) suppsData = refreshed;
+      }
+    }
+    setSupps(suppsData);
 
     const { data: acts, error: actsErr } = await supabase
       .from("activity_types").select("key,label").order("sort");
