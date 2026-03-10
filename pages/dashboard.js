@@ -246,19 +246,17 @@ export default function Dashboard() {
     const { data: ownerRow } = await supabase.from("team_members").select("user_id").eq("team_id", st.team_id).eq("role", "owner").maybeSingle();
     if (!ownerRow?.user_id) return;
 
-    const [{ data: leaderToday }, { data: leaderTomorrow }] = await Promise.all([
-      supabase.from("plans").select("plan_type,planned_time").eq("user_id", ownerRow.user_id).eq("plan_date", todayStr).maybeSingle(),
-      supabase.from("plans").select("plan_type,planned_time").eq("user_id", ownerRow.user_id).eq("plan_date", tomorrowStr).maybeSingle(),
-    ]);
+    const { data: leaderWeek } = await supabase
+      .from("plans").select("plan_type,planned_time,plan_date")
+      .eq("user_id", ownerRow.user_id).gte("plan_date", weekStartStr).lte("plan_date", weekEndStr);
 
-    await Promise.all([
-      leaderToday && supabase.from("plans")
-        .update({ plan_type: leaderToday.plan_type, planned_time: leaderToday.planned_time })
-        .eq("user_id", userId).eq("plan_date", todayStr).eq("status", "PLANNED"),
-      leaderTomorrow && supabase.from("plans")
-        .update({ plan_type: leaderTomorrow.plan_type, planned_time: leaderTomorrow.planned_time })
-        .eq("user_id", userId).eq("plan_date", tomorrowStr).eq("status", "PLANNED"),
-    ]);
+    if (leaderWeek?.length) {
+      await Promise.all(leaderWeek.map((lp) =>
+        supabase.from("plans")
+          .update({ plan_type: lp.plan_type, planned_time: lp.planned_time })
+          .eq("user_id", userId).eq("plan_date", lp.plan_date).eq("status", "PLANNED")
+      ));
+    }
   }
 
   async function fetchPlan(userId, dateStr) {
