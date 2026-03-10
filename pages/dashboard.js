@@ -191,7 +191,9 @@ export default function Dashboard() {
       const { data: existing, error: exErr } = await supabase.from("supplements").select("id").eq("user_id", userId).limit(1);
       if (exErr) throw exErr;
       if (!existing || existing.length === 0) {
-        const defaults = [
+        // Seed from supplement_templates table (managed by superadmin), fall back to hardcoded
+        const { data: tmpl } = await supabase.from("supplement_templates").select("*").order("sort");
+        const source = tmpl?.length ? tmpl : [
           { name: "Creatine", rule_type: "PRE_WORKOUT", offset_minutes: -45 },
           { name: "L-Carnitine", rule_type: "PRE_WORKOUT", offset_minutes: -30 },
           { name: "Cod Liver Oil", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
@@ -202,8 +204,17 @@ export default function Dashboard() {
           { name: "Magnesium", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
           { name: "ZMA", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
           { name: "B12 Coffee", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
-        ].map((s) => ({ ...s, user_id: userId, active: true }));
-        const { error: insErr } = await supabase.from("supplements").insert(defaults);
+        ];
+        const rows = source.map((s) => ({
+          user_id: userId,
+          active: true,
+          name: s.name,
+          rule_type: s.rule_type,
+          window_start: s.window_start || null,
+          window_end: s.window_end || null,
+          offset_minutes: s.offset_minutes || null,
+        }));
+        const { error: insErr } = await supabase.from("supplements").insert(rows);
         if (insErr) throw insErr;
       }
     }
