@@ -318,12 +318,18 @@ export default function Dashboard() {
     const { data: myMembership } = await supabase.from("team_members").select("role").eq("team_id", st.team_id).eq("user_id", userId).maybeSingle();
     if (!myMembership || myMembership.role === "owner") return;
 
-    const { data: ownerRow } = await supabase.from("team_members").select("user_id").eq("team_id", st.team_id).eq("role", "owner").maybeSingle();
-    if (!ownerRow?.user_id) return;
+    // Use the week-plans API (supabaseAdmin) because RLS blocks members reading other users' plans directly
+    const { data: sessionData } = await supabase.auth.getSession();
+    const jwt = sessionData?.session?.access_token;
+    if (!jwt) return;
 
-    const { data: leaderWeek } = await supabase
-      .from("plans").select("plan_type,planned_time,plan_date")
-      .eq("user_id", ownerRow.user_id).gte("plan_date", weekStartStr).lte("plan_date", weekEndStr);
+    const dates = Array.from({ length: 7 }, (_, i) => isoDate(addDays(weekStart, i)));
+    const res = await fetch(
+      `/api/team/week-plans?teamId=${st.team_id}&dates=${dates.join(",")}`,
+      { headers: { Authorization: `Bearer ${jwt}` } }
+    );
+    if (!res.ok) return;
+    const { plans: leaderWeek } = await res.json();
 
     if (leaderWeek?.length) {
       // Insert rows that don't exist yet — use leader's plan_type but leave planned_time null
