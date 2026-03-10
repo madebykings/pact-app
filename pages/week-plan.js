@@ -275,40 +275,48 @@ export default function WeekPlan() {
                 <span style={{ fontSize: 28 }}>{emoji}</span>
               </div>
 
-              <div style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 12, color: "#8e8e93", marginBottom: 6 }}>Workout type</div>
-                <select
-                  value={p.plan_type}
-                  disabled={!canEdit}
-                  onChange={(e) => {
-                    const nextType = e.target.value;
-                    const patch = { plan_type: nextType };
-                    if (nextType === "REST") patch.planned_time = null;
-                    setPlan(p.id, patch);
-                  }}
-                  style={{ ...inputStyle, appearance: "none", WebkitAppearance: "none" }}
-                >
-                  {allowedTypes.map((t) => (
-                    <option key={t.value} value={t.value}>{t.label}</option>
-                  ))}
-                </select>
-              </div>
+              {canEdit ? (
+                <>
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 12, color: "#8e8e93", marginBottom: 6 }}>Workout type</div>
+                    <select
+                      value={p.plan_type}
+                      onChange={(e) => {
+                        const nextType = e.target.value;
+                        const patch = { plan_type: nextType };
+                        if (nextType === "REST") patch.planned_time = null;
+                        setPlan(p.id, patch);
+                      }}
+                      style={{ ...inputStyle, appearance: "none", WebkitAppearance: "none" }}
+                    >
+                      {allowedTypes.map((t) => (
+                        <option key={t.value} value={t.value}>{t.label}</option>
+                      ))}
+                    </select>
+                  </div>
 
-              {p.plan_type !== "REST" && (
-                <div>
-                  <div style={{ fontSize: 12, color: "#8e8e93", marginBottom: 6 }}>Time</div>
-                  <input
-                    type="time"
-                    value={p.planned_time || ""}
-                    disabled={!canEdit}
-                    onChange={(e) => setPlan(p.id, { planned_time: clampTime(e.target.value) })}
-                    style={inputStyle}
-                  />
-                </div>
-              )}
+                  {p.plan_type !== "REST" && (
+                    <div>
+                      <div style={{ fontSize: 12, color: "#8e8e93", marginBottom: 6 }}>Time</div>
+                      <input
+                        type="time"
+                        value={p.planned_time || ""}
+                        onChange={(e) => setPlan(p.id, { planned_time: clampTime(e.target.value) })}
+                        style={inputStyle}
+                      />
+                    </div>
+                  )}
 
-              {p.plan_type === "REST" && (
-                <div style={{ fontSize: 13, color: "#8e8e93" }}>Rest day — no time needed.</div>
+                  {p.plan_type === "REST" && (
+                    <div style={{ fontSize: 13, color: "#8e8e93" }}>Rest day — no time needed.</div>
+                  )}
+                </>
+              ) : (
+                p.plan_type === "REST"
+                  ? <div style={{ fontSize: 13, color: "#8e8e93" }}>Rest day — no time needed.</div>
+                  : p.planned_time
+                    ? <div style={{ fontSize: 13, color: "#8e8e93" }}>Time: {p.planned_time}</div>
+                    : null
               )}
             </div>
           );
