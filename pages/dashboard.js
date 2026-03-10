@@ -219,10 +219,10 @@ export default function Dashboard() {
   }
 
   async function bootstrapDefaults(userId, displayName = "") {
-    await ensureProfileRow(userId, displayName);
+    await Promise.all([
+      ensureProfileRow(userId, displayName),
 
-    {
-      const { error } = await supabase.from("user_settings").upsert(
+      supabase.from("user_settings").upsert(
         {
           user_id: userId,
           mode: "solo",
@@ -236,80 +236,65 @@ export default function Dashboard() {
           ],
         },
         { onConflict: "user_id", ignoreDuplicates: true }
-      );
-      if (error) throw error;
-    }
+      ).then(({ error }) => { if (error) throw error; }),
 
-    {
-      const { data: existing, error: selErr } = await supabase
-        .from("water_logs")
-        .select("user_id")
-        .eq("user_id", userId)
-        .eq("log_date", todayStr)
-        .maybeSingle();
-      if (selErr) throw selErr;
-      if (!existing) {
-        let wErr = null;
-        const { error: e1 } = await supabase.from("water_logs").insert({ user_id: userId, log_date: todayStr, ml_total: 0 });
-        wErr = e1;
-        if (wErr && String(wErr.message || "").toLowerCase().includes("ml_total")) {
-          const { error: e2 } = await supabase.from("water_logs").insert({ user_id: userId, log_date: todayStr, ml: 0 });
-          wErr = e2;
+      (async () => {
+        const { data: existing, error: selErr } = await supabase
+          .from("water_logs").select("user_id").eq("user_id", userId).eq("log_date", todayStr).maybeSingle();
+        if (selErr) throw selErr;
+        if (!existing) {
+          let wErr = null;
+          const { error: e1 } = await supabase.from("water_logs").insert({ user_id: userId, log_date: todayStr, ml_total: 0 });
+          wErr = e1;
+          if (wErr && String(wErr.message || "").toLowerCase().includes("ml_total")) {
+            const { error: e2 } = await supabase.from("water_logs").insert({ user_id: userId, log_date: todayStr, ml: 0 });
+            wErr = e2;
+          }
+          if (wErr) throw wErr;
         }
-        if (wErr) throw wErr;
-      }
-    }
+      })(),
 
-    await ensurePlan(userId, today);
-    await ensurePlan(userId, tomorrow);
+      ensurePlan(userId, today),
+      ensurePlan(userId, tomorrow),
 
-    {
-      const { data: existing, error: exErr } = await supabase.from("supplements").select("id").eq("user_id", userId).limit(1);
-      if (exErr) throw exErr;
-      if (!existing || existing.length === 0) {
-        // Seed from supplement_templates table (managed by superadmin), fall back to hardcoded
-        const { data: tmpl } = await supabase.from("supplement_templates").select("*").order("sort");
-        const source = tmpl?.length ? tmpl : [
-          { name: "Creatine", rule_type: "PRE_WORKOUT", offset_minutes: -45 },
-          { name: "L-Carnitine", rule_type: "PRE_WORKOUT", offset_minutes: -30 },
-          { name: "Cod Liver Oil", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
-          { name: "Tongkat Ali", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
-          { name: "Shilajit", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
-          { name: "Collagen", rule_type: "MIDDAY_WINDOW", window_start: "10:00", window_end: "16:00" },
-          { name: "Ashwagandha", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
-          { name: "Magnesium", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
-          { name: "ZMA", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
-          { name: "B12 Coffee", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
-        ];
-        const rows = source.map((s) => ({
-          user_id: userId,
-          active: true,
-          name: s.name,
-          rule_type: s.rule_type,
-          window_start: s.window_start || null,
-          window_end: s.window_end || null,
-          offset_minutes: s.offset_minutes || null,
-        }));
-        const { error: insErr } = await supabase.from("supplements").insert(rows);
-        if (insErr) throw insErr;
-      }
-    }
+      (async () => {
+        const { data: existing, error: exErr } = await supabase.from("supplements").select("id").eq("user_id", userId).limit(1);
+        if (exErr) throw exErr;
+        if (!existing || existing.length === 0) {
+          const { data: tmpl } = await supabase.from("supplement_templates").select("*").order("sort");
+          const source = tmpl?.length ? tmpl : [
+            { name: "Creatine", rule_type: "PRE_WORKOUT", offset_minutes: -45 },
+            { name: "L-Carnitine", rule_type: "PRE_WORKOUT", offset_minutes: -30 },
+            { name: "Cod Liver Oil", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
+            { name: "Tongkat Ali", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
+            { name: "Shilajit", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
+            { name: "Collagen", rule_type: "MIDDAY_WINDOW", window_start: "10:00", window_end: "16:00" },
+            { name: "Ashwagandha", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
+            { name: "Magnesium", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
+            { name: "ZMA", rule_type: "EVENING_WINDOW", window_start: "18:00", window_end: "23:59" },
+            { name: "B12 Coffee", rule_type: "MORNING_WINDOW", window_start: "06:00", window_end: "10:00" },
+          ];
+          const rows = source.map((s) => ({
+            user_id: userId, active: true, name: s.name, rule_type: s.rule_type,
+            window_start: s.window_start || null, window_end: s.window_end || null, offset_minutes: s.offset_minutes || null,
+          }));
+          const { error: insErr } = await supabase.from("supplements").insert(rows);
+          if (insErr) throw insErr;
+        }
+      })(),
 
-    {
-      const { data: sl, error: slErr } = await supabase
-        .from("sleep_logs")
-        .select("id")
-        .eq("user_id", userId)
-        .eq("log_date", todayStr)
-        .maybeSingle();
-      if (slErr) throw slErr;
-      if (!sl?.id) {
-        const { error: insErr } = await supabase.from("sleep_logs").insert({
-          user_id: userId, log_date: todayStr, bed_time: null, wake_time: null,
-        });
-        if (insErr) throw insErr;
-      }
-    }
+      (async () => {
+        const { data: sl, error: slErr } = await supabase
+          .from("sleep_logs").select("id").eq("user_id", userId).eq("log_date", todayStr).maybeSingle();
+        if (slErr) throw slErr;
+        if (!sl?.id) {
+          const { error: insErr } = await supabase.from("sleep_logs").insert({
+            user_id: userId, log_date: todayStr, bed_time: null, wake_time: null,
+          });
+          if (insErr) throw insErr;
+        }
+      })(),
+    ]);
   }
 
   async function syncTeamPlanIfMember(userId) {
@@ -357,59 +342,53 @@ export default function Dashboard() {
   }
 
   async function refreshAll(userId) {
-    {
-      const { data: st, error: stErr } = await supabase.from("user_settings").select("*").eq("user_id", userId).maybeSingle();
-      if (stErr) throw stErr;
-      setSettings(st || null);
-    }
+    const [
+      { data: st, error: stErr },
+      { data: todayPlanData, error: tpErr },
+      { data: tomorrowPlanData, error: tmrErr },
+      { data: wp, error: wpErr },
+      { data: w, error: wErr },
+      { data: s, error: sErr },
+      { data: sl, error: slErr },
+      { data: wiArr, error: wiErr },
+    ] = await Promise.all([
+      supabase.from("user_settings").select("*").eq("user_id", userId).maybeSingle(),
+      supabase.from("plans").select("*").eq("user_id", userId).eq("plan_date", todayStr).maybeSingle(),
+      supabase.from("plans").select("*").eq("user_id", userId).eq("plan_date", tomorrowStr).maybeSingle(),
+      supabase.from("plans").select("*").eq("user_id", userId).gte("plan_date", weekStartStr).lte("plan_date", weekEndStr).order("plan_date"),
+      supabase.from("water_logs").select("*").eq("user_id", userId).eq("log_date", todayStr).maybeSingle(),
+      supabase.from("supplements").select("*").eq("user_id", userId).eq("active", true).order("name"),
+      supabase.from("sleep_logs").select("*").eq("user_id", userId).eq("log_date", todayStr).maybeSingle(),
+      supabase.from("weigh_ins").select("id,user_id,weigh_date,weight_kg").eq("user_id", userId).order("weigh_date", { ascending: false }).limit(1),
+    ]);
 
-    setTodayPlan(await fetchPlan(userId, todayStr));
-    setTomorrowPlan(await fetchPlan(userId, tomorrowStr));
+    if (stErr) throw stErr;
+    if (tpErr) throw tpErr;
+    if (tmrErr) throw tmrErr;
+    if (wpErr) throw wpErr;
+    if (wErr) throw wErr;
+    if (sErr) throw sErr;
+    if (slErr) throw slErr;
+    if (wiErr) throw wiErr;
 
-    {
-      const { data: wp, error: wpErr } = await supabase
-        .from("plans").select("*").eq("user_id", userId)
-        .gte("plan_date", weekStartStr).lte("plan_date", weekEndStr).order("plan_date");
-      if (wpErr) throw wpErr;
-      setWeekPlans(wp || []);
-    }
+    const mySupps = s || [];
 
-    {
-      const { data: w, error: wErr } = await supabase.from("water_logs").select("*").eq("user_id", userId).eq("log_date", todayStr).maybeSingle();
-      if (wErr) throw wErr;
-      setWater(w || null);
-    }
+    // supplement_logs needs supplement IDs — one extra round trip, but everything else is already done
+    const { data: logs, error: lErr } = await supabase.from("supplement_logs").select("*").eq("log_date", todayStr);
+    if (lErr) throw lErr;
+    const myIds = new Set(mySupps.map((s) => s.id));
+    const map = {};
+    (logs || []).forEach((r) => { if (myIds.has(r.supplement_id)) map[r.supplement_id] = true; });
 
-    let mySupps = [];
-    {
-      const { data: s, error: sErr } = await supabase.from("supplements").select("*").eq("user_id", userId).eq("active", true).order("name");
-      if (sErr) throw sErr;
-      mySupps = s || [];
-      setSupps(mySupps);
-    }
-
-    {
-      const { data: logs, error: lErr } = await supabase.from("supplement_logs").select("*").eq("log_date", todayStr);
-      if (lErr) throw lErr;
-      const myIds = new Set(mySupps.map((s) => s.id));
-      const map = {};
-      (logs || []).forEach((r) => { if (myIds.has(r.supplement_id)) map[r.supplement_id] = true; });
-      setTakenMap(map);
-    }
-
-    {
-      const { data: sl, error: slErr } = await supabase.from("sleep_logs").select("*").eq("user_id", userId).eq("log_date", todayStr).maybeSingle();
-      if (slErr) throw slErr;
-      setSleep(sl || null);
-    }
-
-    {
-      const { data: w, error: wErr } = await supabase
-        .from("weigh_ins").select("id,user_id,weigh_date,weight_kg")
-        .eq("user_id", userId).order("weigh_date", { ascending: false }).limit(1);
-      if (wErr) throw wErr;
-      setWeighIn(w?.[0] || null);
-    }
+    setSettings(st || null);
+    setTodayPlan(todayPlanData);
+    setTomorrowPlan(tomorrowPlanData);
+    setWeekPlans(wp || []);
+    setWater(w || null);
+    setSupps(mySupps);
+    setTakenMap(map);
+    setSleep(sl || null);
+    setWeighIn(wiArr?.[0] || null);
   }
 
   async function markDone(plan) {
