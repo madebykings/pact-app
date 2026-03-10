@@ -75,6 +75,7 @@ export default function WeekPlan() {
   const [user, setUser] = useState(null);
   const [settings, setSettings] = useState(null);
   const [role, setRole] = useState(null);
+  const [planUserId, setPlanUserId] = useState(null);
   const [plans, setPlans] = useState([]);
   const [err, setErr] = useState("");
 
@@ -120,17 +121,33 @@ export default function WeekPlan() {
         if (stErr) throw stErr;
         setSettings(st || null);
 
+        let userRole = null;
+        let resolvedPlanUserId = data.user.id;
+
         if (st?.mode === "team" && st?.team_id) {
           const { data: tm, error: tmErr } = await supabase
             .from("team_members").select("role")
             .eq("team_id", st.team_id).eq("user_id", data.user.id).maybeSingle();
-          if (!tmErr) setRole(tm?.role || "member");
+          userRole = !tmErr ? (tm?.role || "member") : "member";
+          setRole(userRole);
+
+          if (userRole !== "owner") {
+            // Members view the owner's plan (read-only)
+            const { data: ownerRow } = await supabase
+              .from("team_members").select("user_id")
+              .eq("team_id", st.team_id).eq("role", "owner").maybeSingle();
+            if (ownerRow?.user_id) resolvedPlanUserId = ownerRow.user_id;
+          }
         } else {
           setRole(null);
         }
 
-        await ensureRows(data.user.id);
-        await refresh(data.user.id);
+        setPlanUserId(resolvedPlanUserId);
+
+        if (resolvedPlanUserId === data.user.id) {
+          await ensureRows(data.user.id);
+        }
+        await refresh(resolvedPlanUserId);
       } catch (e) {
         setErr(e?.message || String(e));
       }
@@ -159,7 +176,7 @@ export default function WeekPlan() {
     if (!canEdit) return alert("Only the team leader can edit the plan.");
     const { error } = await supabase.from("plans").update({ ...patch }).eq("id", planId);
     if (error) alert(error.message);
-    await refresh(user.id);
+    await refresh(planUserId || user.id);
   }
 
   if (err) {
