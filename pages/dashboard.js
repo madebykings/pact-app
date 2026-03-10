@@ -64,6 +64,57 @@ async function ensureProfileRow(userId, displayName = "") {
   }
 }
 
+function ConfettiCanvas({ active }) {
+  const canvasRef = useRef(null);
+  useEffect(() => {
+    if (!active || !canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    const COLORS = ["#5B4FE9", "#34c759", "#ff9f0a", "#ff453a", "#30b0c7", "#a78bfa", "#ffd60a"];
+    const pieces = Array.from({ length: 120 }, () => ({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height * -0.5,
+      w: Math.random() * 10 + 5,
+      h: Math.random() * 6 + 4,
+      color: COLORS[Math.floor(Math.random() * COLORS.length)],
+      vx: (Math.random() - 0.5) * 3,
+      vy: Math.random() * 3 + 1.5,
+      angle: Math.random() * 360,
+      spin: (Math.random() - 0.5) * 8,
+    }));
+    let raf;
+    let elapsed = 0;
+    function draw() {
+      elapsed++;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      for (const p of pieces) {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.06;
+        p.angle += p.spin;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate((p.angle * Math.PI) / 180);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        ctx.restore();
+      }
+      if (elapsed < 220) raf = requestAnimationFrame(draw);
+    }
+    raf = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(raf);
+  }, [active]);
+  if (!active) return null;
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 9999 }}
+    />
+  );
+}
+
 export default function Dashboard() {
   const [user, setUser] = useState(null);
   const [settings, setSettings] = useState(null);
@@ -72,6 +123,9 @@ export default function Dashboard() {
   const [tomorrowPlan, setTomorrowPlan] = useState(null);
   const [weekPlans, setWeekPlans] = useState([]);
   const [weekTab, setWeekTab] = useState("upcoming");
+
+  const [showConfetti, setShowConfetti] = useState(false);
+  const confettiShownToday = useRef(false);
 
   const [water, setWater] = useState(null);
 
@@ -117,6 +171,27 @@ export default function Dashboard() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Trigger confetti when daily progress hits 100% for the first time this session
+  useEffect(() => {
+    if (!todayPlan || !tomorrowPlan || !settings) return;
+    const isRestDay = todayPlan.plan_type === "REST";
+    const tomorrowIsRest = tomorrowPlan.plan_type === "REST";
+    const waterVal2 = water?.ml_total ?? water?.ml ?? 0;
+    const items = [
+      !!(sleep?.bed_time && sleep?.wake_time),
+      supps.length > 0 ? Object.keys(takenMap).length === supps.length : null,
+      !tomorrowIsRest ? !!tomorrowPlan.planned_time : null,
+      waterVal2 >= (settings?.water_target_ml || 3000),
+      !isRestDay ? todayPlan.status === "DONE" : null,
+    ].filter((v) => v !== null);
+    const pct = items.length > 0 ? Math.round(items.filter(Boolean).length / items.length * 100) : 0;
+    if (pct === 100 && !confettiShownToday.current) {
+      confettiShownToday.current = true;
+      setShowConfetti(true);
+      setTimeout(() => setShowConfetti(false), 4500);
+    }
+  }, [todayPlan, tomorrowPlan, water, sleep, supps, takenMap, settings]);
 
   async function logout() {
     await supabase.auth.signOut();
@@ -251,17 +326,18 @@ export default function Dashboard() {
       .eq("user_id", ownerRow.user_id).gte("plan_date", weekStartStr).lte("plan_date", weekEndStr);
 
     if (leaderWeek?.length) {
-      // Insert rows that don't exist yet (ignoreDuplicates=true won't touch existing rows)
+      // Insert rows that don't exist yet — use leader's plan_type but leave planned_time null
+      // so each member keeps their own time preference
       await Promise.all(leaderWeek.map((lp) =>
         supabase.from("plans").upsert(
-          { user_id: userId, plan_date: lp.plan_date, plan_type: lp.plan_type, planned_time: lp.planned_time, status: "PLANNED" },
+          { user_id: userId, plan_date: lp.plan_date, plan_type: lp.plan_type, status: "PLANNED" },
           { onConflict: "user_id,plan_date", ignoreDuplicates: true }
         )
       ));
-      // Update existing PLANNED rows with owner's current plan_type/time (don't touch DONE/CANCELLED)
+      // Update plan_type on existing PLANNED rows (don't touch DONE/CANCELLED, don't touch planned_time)
       await Promise.all(leaderWeek.map((lp) =>
         supabase.from("plans")
-          .update({ plan_type: lp.plan_type, planned_time: lp.planned_time })
+          .update({ plan_type: lp.plan_type })
           .eq("user_id", userId).eq("plan_date", lp.plan_date).eq("status", "PLANNED")
       ));
     }
@@ -527,6 +603,7 @@ export default function Dashboard() {
 
   return (
     <div style={pageStyle}>
+      <ConfettiCanvas active={showConfetti} />
       {/* Header */}
       <div style={{ padding: "24px 18px 4px" }}>
         <div style={{ fontSize: 13, color: "#8e8e93", marginBottom: 2 }}>{dateLabel}</div>
