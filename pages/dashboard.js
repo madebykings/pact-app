@@ -49,16 +49,18 @@ function calcSleepHours(bedTime, wakeTime) {
   return (wake - bed) / 60;
 }
 
-async function ensureProfileRow(userId) {
+async function ensureProfileRow(userId, displayName = "") {
   const { data: existing, error } = await supabase
     .from("user_profiles")
-    .select("user_id")
+    .select("user_id,display_name")
     .eq("user_id", userId)
     .maybeSingle();
   if (error) throw error;
   if (!existing) {
-    const { error: insErr } = await supabase.from("user_profiles").insert({ user_id: userId, display_name: "" });
+    const { error: insErr } = await supabase.from("user_profiles").insert({ user_id: userId, display_name: displayName });
     if (insErr) throw insErr;
+  } else if (!existing.display_name && displayName) {
+    await supabase.from("user_profiles").update({ display_name: displayName }).eq("user_id", userId);
   }
 }
 
@@ -101,7 +103,8 @@ export default function Dashboard() {
         const u = data?.user || null;
         setUser(u);
         if (!u?.id) return;
-        await bootstrapDefaults(u.id);
+        const metaName = u.user_metadata?.display_name || "";
+        await bootstrapDefaults(u.id, metaName);
         await refreshAll(u.id);
       } catch (e) {
         console.warn(e);
@@ -138,8 +141,8 @@ export default function Dashboard() {
     if (insErr) throw insErr;
   }
 
-  async function bootstrapDefaults(userId) {
-    await ensureProfileRow(userId);
+  async function bootstrapDefaults(userId, displayName = "") {
+    await ensureProfileRow(userId, displayName);
 
     {
       const { error } = await supabase.from("user_settings").upsert(
