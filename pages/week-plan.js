@@ -34,24 +34,30 @@ const inputStyle = {
 };
 
 const ALL_TYPES = [
-  { value: "REST", label: "Rest day" },
-  { value: "WALK", label: "Walk" },
-  { value: "RUN", label: "Run" },
-  { value: "SPIN", label: "Spin" },
-  { value: "HIIT", label: "HIIT" },
-  { value: "SWIM", label: "Swim" },
-  { value: "HILLWALK", label: "Hillwalk" },
-  { value: "WEIGHTS", label: "Weights" },
-  { value: "YOGA", label: "Yoga" },
-  { value: "PILATES", label: "Pilates" },
-  { value: "MOBILITY", label: "Mobility" },
-  { value: "OTHER", label: "Other" },
+  { value: "REST",      label: "Rest day" },
+  { value: "WALK",      label: "Walk" },
+  { value: "RUN",       label: "Run" },
+  { value: "SPIN",      label: "Spin" },
+  { value: "CYCLE",     label: "Cycle" },
+  { value: "HIIT",      label: "HIIT" },
+  { value: "SWIM",      label: "Swim" },
+  { value: "HIKE",      label: "Hillwalk / Hike" },
+  { value: "HILLWALK",  label: "Hillwalk" },
+  { value: "WEIGHTS",   label: "Weights" },
+  { value: "YOGA",      label: "Yoga" },
+  { value: "PILATES",   label: "Pilates" },
+  { value: "STRETCH",   label: "Stretching / Mobility" },
+  { value: "MOBILITY",  label: "Mobility" },
+  { value: "SPORT",     label: "Sport" },
+  { value: "ROW",       label: "Row" },
+  { value: "OTHER",     label: "Other" },
 ];
 
 const PLAN_EMOJI = {
-  HIIT: "🔥", SPIN: "🚴", WEIGHTS: "🏋️", REST: "😴",
-  RUN: "🏃", WALK: "🚶", SWIM: "🏊", HILLWALK: "🏔️",
-  YOGA: "🧘", PILATES: "🤸", MOBILITY: "🦵", OTHER: "⭐",
+  HIIT: "🔥", SPIN: "🚴", CYCLE: "🚴", WEIGHTS: "🏋️", REST: "😴",
+  RUN: "🏃", WALK: "🚶", SWIM: "🏊", HILLWALK: "🏔️", HIKE: "🏔️",
+  YOGA: "🧘", PILATES: "🤸", MOBILITY: "🦵", STRETCH: "🦵",
+  SPORT: "🏅", ROW: "🚣", OTHER: "⭐",
 };
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -70,8 +76,6 @@ function clampTime(t) {
   const mm = String(Math.max(0, Math.min(59, Number(m[2])))).padStart(2, "0");
   return `${hh}:${mm}`;
 }
-
-const VALID_PLAN_TYPE_KEYS = new Set(ALL_TYPES.map((t) => t.value));
 
 export default function WeekPlan() {
   const [user, setUser] = useState(null);
@@ -103,10 +107,7 @@ export default function WeekPlan() {
     const base = activityTypes.length > 0 ? activityTypes : ALL_TYPES;
     const inc = Array.isArray(settings?.included_activities) ? settings.included_activities : [];
     const set = new Set(inc);
-    return base.filter((t) =>
-      VALID_PLAN_TYPE_KEYS.has(t.value) &&
-      (t.value === "REST" || t.value === "OTHER" || set.has(t.value))
-    );
+    return base.filter((t) => t.value === "REST" || t.value === "OTHER" || set.has(t.value));
   }, [activityTypes, settings?.included_activities]);
 
   const canEdit = useMemo(() => {
