@@ -71,6 +71,8 @@ function clampTime(t) {
   return `${hh}:${mm}`;
 }
 
+const VALID_PLAN_TYPE_KEYS = new Set(ALL_TYPES.map((t) => t.value));
+
 export default function WeekPlan() {
   const [user, setUser] = useState(null);
   const [settings, setSettings] = useState(null);
@@ -101,7 +103,10 @@ export default function WeekPlan() {
     const base = activityTypes.length > 0 ? activityTypes : ALL_TYPES;
     const inc = Array.isArray(settings?.included_activities) ? settings.included_activities : [];
     const set = new Set(inc);
-    return base.filter((t) => t.value === "REST" || t.value === "OTHER" || set.has(t.value));
+    return base.filter((t) =>
+      VALID_PLAN_TYPE_KEYS.has(t.value) &&
+      (t.value === "REST" || t.value === "OTHER" || set.has(t.value))
+    );
   }, [activityTypes, settings?.included_activities]);
 
   const canEdit = useMemo(() => {
