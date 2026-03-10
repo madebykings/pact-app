@@ -21,9 +21,10 @@ const ALL_ACTIVITIES = [
 ];
 
 const PLAN_EMOJI = {
-  HIIT: "🔥", SPIN: "🚴", WEIGHTS: "🏋️", REST: "😴",
-  RUN: "🏃", WALK: "🚶", SWIM: "🏊", HILLWALK: "🏔️",
-  YOGA: "🧘", PILATES: "🤸", MOBILITY: "🦵", OTHER: "⭐",
+  HIIT: "🔥", SPIN: "🚴", CYCLE: "🚴", WEIGHTS: "🏋️", REST: "😴",
+  RUN: "🏃", WALK: "🚶", SWIM: "🏊", HILLWALK: "🏔️", HIKE: "🏔️",
+  YOGA: "🧘", PILATES: "🤸", MOBILITY: "🦵", STRETCH: "🦵",
+  SPORT: "🏅", ROW: "🚣", OTHER: "⭐",
 };
 
 const PRIMARY = "#5B4FE9";
