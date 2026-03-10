@@ -166,40 +166,22 @@ export default function Settings() {
     setWaterTargetDraft(st?.water_target_ml ?? 3000);
     setSleepTargetDraft(st?.sleep_target_hours ?? 8);
 
-    let suppsData = [];
-    const { data: s, error: sErr } = await supabase
+    const { data: s } = await supabase
       .from("supplements").select("*").eq("user_id", userId).order("name");
-    if (!sErr) suppsData = s || [];
+    const userSupps = s || [];
 
-    // Auto-add any supplement_templates not yet in user's supplements (matched by name)
+    // Merge with supplement_templates so new templates appear as available (inactive) options
     const { data: tmpl } = await supabase.from("supplement_templates").select("*").order("sort");
-    if (tmpl?.length) {
-      const existingNames = new Set(suppsData.map((x) => x.name.toLowerCase()));
-      const newRows = tmpl
-        .filter((t) => !existingNames.has(t.name.toLowerCase()))
-        .map((t) => ({ user_id: userId, active: true, name: t.name, rule_type: t.rule_type, window_start: t.window_start || null, window_end: t.window_end || null, offset_minutes: t.offset_minutes || null }));
-      if (newRows.length) {
-        await supabase.from("supplements").insert(newRows);
-        const { data: refreshed } = await supabase.from("supplements").select("*").eq("user_id", userId).order("name");
-        if (refreshed) suppsData = refreshed;
-      }
-    }
-    setSupps(suppsData);
+    const existingNames = new Set(userSupps.map((x) => x.name.toLowerCase()));
+    const templateSupps = (tmpl || [])
+      .filter((t) => !existingNames.has(t.name.toLowerCase()))
+      .map((t) => ({ ...t, id: null, active: false, _template: true }));
+    setSupps([...userSupps, ...templateSupps].sort((a, b) => a.name.localeCompare(b.name)));
 
     const { data: acts, error: actsErr } = await supabase
       .from("activity_types").select("key,label").order("sort");
     if (!actsErr && acts?.length) {
       setActivityOptions(acts.map((a) => ({ value: a.key, label: a.label })));
-
-      // Auto-include any new activities that aren't in the user's saved list
-      const currentIncluded = new Set(st?.included_activities || []);
-      const newKeys = acts.map((a) => a.key).filter((k) => !currentIncluded.has(k));
-      if (newKeys.length > 0) {
-        const updated = [...(st?.included_activities || []), ...newKeys];
-        await supabase.from("user_settings").update({ included_activities: updated }).eq("user_id", userId);
-        st = { ...st, included_activities: updated };
-        setSettings(st);
-      }
     }
 
     if (process.env.NEXT_PUBLIC_WHATSAPP_ENABLED === "true") {
@@ -306,8 +288,16 @@ export default function Settings() {
   }
 
   async function toggleSupplementActive(s) {
-    const { error } = await supabase.from("supplements").update({ active: !s.active }).eq("id", s.id);
-    if (error) { alert(error.message); return; }
+    if (s._template) {
+      const { error } = await supabase.from("supplements").insert({
+        user_id: user.id, active: true, name: s.name, rule_type: s.rule_type,
+        window_start: s.window_start || null, window_end: s.window_end || null, offset_minutes: s.offset_minutes || null,
+      });
+      if (error) { alert(error.message); return; }
+    } else {
+      const { error } = await supabase.from("supplements").update({ active: !s.active }).eq("id", s.id);
+      if (error) { alert(error.message); return; }
+    }
     await refresh(user.id);
   }
 
@@ -432,7 +422,7 @@ export default function Settings() {
           <div style={{ display: "grid", gap: 8 }}>
             {supps.map((s) => (
               <button
-                key={s.id}
+                key={s.id ?? `tmpl_${s.name}`}
                 onClick={() => toggleSupplementActive(s)}
                 style={{
                   display: "flex", alignItems: "center", gap: 12,

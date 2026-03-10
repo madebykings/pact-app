@@ -296,21 +296,6 @@ export default function Dashboard() {
       const { data: s, error: sErr } = await supabase.from("supplements").select("*").eq("user_id", userId).eq("active", true).order("name");
       if (sErr) throw sErr;
       mySupps = s || [];
-
-      // Auto-add any supplement_templates not yet in user's supplements (matched by name)
-      const { data: tmpl } = await supabase.from("supplement_templates").select("*").order("sort");
-      if (tmpl?.length) {
-        const existingNames = new Set(mySupps.map((s) => s.name.toLowerCase()));
-        const newRows = tmpl
-          .filter((t) => !existingNames.has(t.name.toLowerCase()))
-          .map((t) => ({ user_id: userId, active: true, name: t.name, rule_type: t.rule_type, window_start: t.window_start || null, window_end: t.window_end || null, offset_minutes: t.offset_minutes || null }));
-        if (newRows.length) {
-          await supabase.from("supplements").insert(newRows);
-          const { data: refreshed } = await supabase.from("supplements").select("*").eq("user_id", userId).eq("active", true).order("name");
-          mySupps = refreshed || mySupps;
-        }
-      }
-
       setSupps(mySupps);
     }
 
