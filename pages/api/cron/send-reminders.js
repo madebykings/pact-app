@@ -38,6 +38,16 @@ const DEFAULT_TEMPLATES = {
     brutal: "{name}. Day's ending. Workout not done. You're leaving points on the table.",
     savage: "{name}, you're missing out on points while your teammates rack them up. Your call.",
   },
+  weigh_in_day: {
+    normal: "Hey {name} — it's weigh-in day! Jump on the scales and log your weight 💪",
+    brutal: "{name}. Weigh-in day. Scales. Now. Log it.",
+    savage: "{name}, it's weigh in day ya fatty. Get on the scales. No excuses.",
+  },
+  weight_goal_hit: {
+    normal: "Well done {name}! You've hit your weight goal of {target}kg! Amazing work 🎉",
+    brutal: "{name}. Target weight reached. {target}kg. Job done.",
+    savage: "{name}, {target}kg achieved. You actually did it. Respect.",
+  },
 };
 
 function fillTemplate(template, vars) {
@@ -104,10 +114,11 @@ export default async function handler(req, res) {
     { data: myTeamRows },
     { data: todayDoneEvents },
     { data: dbTemplates },
+    { data: todayWeighIns },
   ] = await Promise.all([
     supabaseAdmin
       .from("user_settings")
-      .select("user_id, timezone, tone")
+      .select("user_id, timezone, tone, target_weight_kg")
       .in("user_id", subUserIds),
     supabaseAdmin
       .from("user_profiles")
@@ -135,6 +146,11 @@ export default async function handler(req, res) {
     supabaseAdmin
       .from("notification_templates")
       .select("trigger_type, tone, template"),
+    supabaseAdmin
+      .from("weigh_ins")
+      .select("user_id, weight_kg")
+      .in("user_id", subUserIds)
+      .eq("weigh_date", todayUTC),
   ]);
 
   // ── Merge DB templates over defaults ─────────────────────────────────────
@@ -144,10 +160,13 @@ export default async function handler(req, res) {
   }
 
   // ── Build lookup maps ────────────────────────────────────────────────────
-  const settingsMap = Object.fromEntries((settings || []).map((s) => [s.user_id, s]));
-  const profileMap  = Object.fromEntries((profiles || []).map((p) => [p.user_id, p]));
-  const planMap     = Object.fromEntries((plans || []).map((p) => [p.user_id, p]));
-  const subMap      = Object.fromEntries(subs.map((s) => [s.user_id, s]));
+  const settingsMap   = Object.fromEntries((settings || []).map((s) => [s.user_id, s]));
+  const profileMap    = Object.fromEntries((profiles || []).map((p) => [p.user_id, p]));
+  const planMap       = Object.fromEntries((plans || []).map((p) => [p.user_id, p]));
+  const subMap        = Object.fromEntries(subs.map((s) => [s.user_id, s]));
+  const weighInMap    = Object.fromEntries((todayWeighIns || []).map((w) => [w.user_id, w]));
+
+  // Weigh-in day: Saturday. Reminder sent at 08:00 local time (checked per-user with their timezone).
 
   const suppsByUser = {};
   for (const s of supps || []) {
@@ -300,6 +319,22 @@ export default async function handler(req, res) {
         if (plan && plan.plan_type !== "REST" && plan.status !== "CANCELLED") {
           await maybeSend("eod_incomplete", "eod_incomplete", {});
         }
+      }
+
+      // ── 5. Weigh-in day reminder: Saturday at 08:00 local time ───────────
+      const localDayOfWeek = new Intl.DateTimeFormat("en-GB", {
+        timeZone: timezone, weekday: "short",
+      }).format(now);
+      const isSaturday = localDayOfWeek === "Sat";
+      if (isSaturday && inWindow(nowMins, 8 * 60, 30, 8)) {
+        await maybeSend("weigh_in_day", "weigh_in_day", {});
+      }
+
+      // ── 6. Weight goal hit ───────────────────────────────────────────────
+      const todayWeighIn = weighInMap[userId];
+      const targetWeight = st?.target_weight_kg;
+      if (todayWeighIn && targetWeight && todayWeighIn.weight_kg <= targetWeight) {
+        await maybeSend("weight_goal_hit", "weight_goal_hit", { target: targetWeight });
       }
     } catch (e) {
       console.error("send-reminders: error for user", userId, e);
