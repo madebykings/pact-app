@@ -77,6 +77,7 @@ export default function WeekPlan() {
   const [role, setRole] = useState(null);
   const [planUserId, setPlanUserId] = useState(null);
   const [plans, setPlans] = useState([]);
+  const [activityTypes, setActivityTypes] = useState([]);
   const [err, setErr] = useState("");
 
   const today = useMemo(() => new Date(), []);
@@ -96,10 +97,11 @@ export default function WeekPlan() {
   );
 
   const allowedTypes = useMemo(() => {
+    const base = activityTypes.length > 0 ? activityTypes : ALL_TYPES;
     const inc = Array.isArray(settings?.included_activities) ? settings.included_activities : [];
     const set = new Set(inc);
-    return ALL_TYPES.filter((t) => t.value === "REST" || t.value === "OTHER" || set.has(t.value));
-  }, [settings?.included_activities]);
+    return base.filter((t) => t.value === "REST" || t.value === "OTHER" || set.has(t.value));
+  }, [activityTypes, settings?.included_activities]);
 
   const canEdit = useMemo(() => {
     if (!settings) return false;
@@ -120,6 +122,9 @@ export default function WeekPlan() {
           .from("user_settings").select("*").eq("user_id", data.user.id).maybeSingle();
         if (stErr) throw stErr;
         setSettings(st || null);
+
+        const { data: acts } = await supabase.from("activity_types").select("key,label").order("sort");
+        if (acts?.length) setActivityTypes(acts.map((a) => ({ value: a.key, label: a.label })));
 
         let userRole = null;
         let resolvedPlanUserId = data.user.id;

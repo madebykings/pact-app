@@ -493,7 +493,7 @@ export default function Settings() {
           )}
 
           <div style={{ marginTop: 14, fontSize: 12, color: "#8e8e93" }}>
-            <b>Sandbox:</b> Message the Twilio sandbox number with the join keyword before saving your number.
+            WhatsApp reminders will be sent from <b>+447360269111</b>. Save your number and opt in above to receive them.
           </div>
         </div>
 

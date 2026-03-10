@@ -105,6 +105,7 @@ export default function Dashboard() {
         if (!u?.id) return;
         const metaName = u.user_metadata?.display_name || "";
         await bootstrapDefaults(u.id, metaName);
+        await syncTeamPlanIfMember(u.id);
         await refreshAll(u.id);
       } catch (e) {
         console.warn(e);
@@ -222,6 +223,31 @@ export default function Dashboard() {
         if (insErr) throw insErr;
       }
     }
+  }
+
+  async function syncTeamPlanIfMember(userId) {
+    const { data: st } = await supabase.from("user_settings").select("mode,team_id").eq("user_id", userId).maybeSingle();
+    if (st?.mode !== "team" || !st?.team_id) return;
+
+    const { data: myMembership } = await supabase.from("team_members").select("role").eq("team_id", st.team_id).eq("user_id", userId).maybeSingle();
+    if (!myMembership || myMembership.role === "owner") return;
+
+    const { data: ownerRow } = await supabase.from("team_members").select("user_id").eq("team_id", st.team_id).eq("role", "owner").maybeSingle();
+    if (!ownerRow?.user_id) return;
+
+    const [{ data: leaderToday }, { data: leaderTomorrow }] = await Promise.all([
+      supabase.from("plans").select("plan_type,planned_time").eq("user_id", ownerRow.user_id).eq("plan_date", todayStr).maybeSingle(),
+      supabase.from("plans").select("plan_type,planned_time").eq("user_id", ownerRow.user_id).eq("plan_date", tomorrowStr).maybeSingle(),
+    ]);
+
+    await Promise.all([
+      leaderToday && supabase.from("plans")
+        .update({ plan_type: leaderToday.plan_type, planned_time: leaderToday.planned_time })
+        .eq("user_id", userId).eq("plan_date", todayStr).eq("status", "PLANNED"),
+      leaderTomorrow && supabase.from("plans")
+        .update({ plan_type: leaderTomorrow.plan_type, planned_time: leaderTomorrow.planned_time })
+        .eq("user_id", userId).eq("plan_date", tomorrowStr).eq("status", "PLANNED"),
+    ]);
   }
 
   async function fetchPlan(userId, dateStr) {

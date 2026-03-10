@@ -93,6 +93,8 @@ export default function SuperAdmin() {
 
   // Supplement templates
   const [templates, setTemplates] = useState([]);
+  const [suppTableExists, setSuppTableExists] = useState(true);
+  const [suppSeeding, setSuppSeeding] = useState(false);
   const [suppName, setSuppName] = useState("");
   const [suppRule, setSuppRule] = useState("MORNING_WINDOW");
   const [suppWinStart, setSuppWinStart] = useState("06:00");
@@ -151,8 +153,14 @@ export default function SuperAdmin() {
     setActivities(acts || []);
 
     // Supplement templates
-    const { data: tmpl } = await supabase.from("supplement_templates").select("*").order("sort");
-    setTemplates(tmpl || []);
+    const { data: tmpl, error: tmplErr } = await supabase.from("supplement_templates").select("*").order("sort");
+    if (tmplErr) {
+      setSuppTableExists(false);
+      setTemplates([]);
+    } else {
+      setSuppTableExists(true);
+      setTemplates(tmpl || []);
+    }
 
     // Notification templates (via admin API)
     try {
@@ -244,6 +252,25 @@ export default function SuperAdmin() {
       headers: { Authorization: `Bearer ${jwt}` },
     });
     await refreshAll();
+  }
+
+  async function seedDefaultTemplates() {
+    setSuppSeeding(true); setSuppMsg("");
+    try {
+      const jwt = await getJwt();
+      const res = await fetch("/api/admin/supplement-templates", {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error);
+      setSuppMsg(`Seeded ${body.seeded} default templates.`);
+      await refreshAll();
+    } catch (e) {
+      setSuppMsg(`Error: ${e?.message || String(e)}`);
+    } finally {
+      setSuppSeeding(false);
+    }
   }
 
   // ── Notification message templates ──────────────────────────────────────────
@@ -488,9 +515,9 @@ CREATE POLICY "public read" ON activity_types FOR SELECT USING (true);`}</pre>
             Default supplements seeded for new users on first dashboard load. Existing users are not affected when templates change.
           </p>
 
-          {templates.length === 0 && (
+          {!suppTableExists && (
             <div style={{ background: "#fff8e6", border: "1.5px solid #f0a000", borderRadius: 12, padding: 14, marginBottom: 16, fontSize: 13 }}>
-              <b>No supplement templates found.</b> If the table doesn't exist:
+              <b>Table not found.</b> Run this SQL in Supabase → SQL Editor:
               <pre style={{ margin: "10px 0 0", fontSize: 11, background: "#f9f9f9", padding: 10, borderRadius: 8, overflowX: "auto" }}>{`CREATE TABLE supplement_templates (
   id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name           TEXT NOT NULL,
@@ -503,6 +530,18 @@ CREATE POLICY "public read" ON activity_types FOR SELECT USING (true);`}</pre>
 );
 ALTER TABLE supplement_templates ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "public read" ON supplement_templates FOR SELECT USING (true);`}</pre>
+            </div>
+          )}
+          {suppTableExists && templates.length === 0 && (
+            <div style={{ background: "#f2f2f7", borderRadius: 12, padding: 14, marginBottom: 16, fontSize: 13, display: "flex", alignItems: "center", gap: 14 }}>
+              <span style={{ opacity: 0.7 }}>No templates yet.</span>
+              <button
+                onClick={seedDefaultTemplates}
+                disabled={suppSeeding}
+                style={{ padding: "7px 18px", fontWeight: 700, fontSize: 13, background: PRIMARY, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}
+              >
+                {suppSeeding ? "Seeding…" : "Seed defaults"}
+              </button>
             </div>
           )}
 
