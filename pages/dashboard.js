@@ -251,6 +251,14 @@ export default function Dashboard() {
       .eq("user_id", ownerRow.user_id).gte("plan_date", weekStartStr).lte("plan_date", weekEndStr);
 
     if (leaderWeek?.length) {
+      // Insert rows that don't exist yet (ignoreDuplicates=true won't touch existing rows)
+      await Promise.all(leaderWeek.map((lp) =>
+        supabase.from("plans").upsert(
+          { user_id: userId, plan_date: lp.plan_date, plan_type: lp.plan_type, planned_time: lp.planned_time, status: "PLANNED" },
+          { onConflict: "user_id,plan_date", ignoreDuplicates: true }
+        )
+      ));
+      // Update existing PLANNED rows with owner's current plan_type/time (don't touch DONE/CANCELLED)
       await Promise.all(leaderWeek.map((lp) =>
         supabase.from("plans")
           .update({ plan_type: lp.plan_type, planned_time: lp.planned_time })
